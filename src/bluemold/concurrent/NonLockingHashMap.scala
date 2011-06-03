@@ -1,4 +1,4 @@
-package 
+package bluemold.concurrent
 
 import org.bluemold.unsafe.Unsafe
 import collection.immutable.HashMap
