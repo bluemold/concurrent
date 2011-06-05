@@ -4,8 +4,11 @@
 
   <groupId>org.bluemold</groupId>
   <artifactId>concurrent</artifactId>
-  <version>1.0</version>
+  <version>0.1</version>
   <inceptionYear>2011</inceptionYear>
+
+    <name>concurrent</name>
+    <url>http://bluemold.org/concurrent</url>
 
   <properties>
     <scala.version>2.8.1</scala.version>
@@ -36,7 +39,7 @@
       <dependency>
         <groupId>org.bluemold</groupId>
         <artifactId>unsafe</artifactId>
-        <version>1.0</version>
+        <version>0.1</version>
       </dependency>
     <dependency>
       <groupId>org.scala-lang</groupId>
@@ -100,4 +103,14 @@
       </plugin>
     </plugins>
   </reporting>
+
+    <distributionManagement>
+        <downloadUrl>https://github.com/neilessy/bluemold-concurrent</downloadUrl>
+        <repository>
+            <id>local</id>
+            <name>Local Repository</name>
+          <url>file:///repo1</url>
+          <layout>default</layout>
+        </repository>
+    </distributionManagement>
 </project>
