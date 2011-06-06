@@ -36,13 +36,14 @@ private[concurrent] object NonLockingHashMap {
 }
 
 final class NonLockingHashMap[A,B]( requestedConcurrency: Int ) extends Map[A, B] with MapLike[A, B, NonLockingHashMap[A, B]] {
+  import NonLockingHashMap._
 
   // default constructors
   def this() = this( NonLockingHashMap.minimumConcurrency )
 
   // initialization
-  val concurrency = NonLockingHashMap.computeConcurrency( requestedConcurrency )
-  val maps = Array.fill( concurrency )( new HashMap[A,B] )
+  private val concurrency = computeConcurrency( requestedConcurrency )
+  private val maps = Array.fill( concurrency )( new HashMap[A,B] )
 
 
   override def empty: this.type = {
@@ -121,13 +122,11 @@ final class NonLockingHashMap[A,B]( requestedConcurrency: Int ) extends Map[A, B
   }
 
   private def getHashMap( index: Int ): HashMap[A,B] = {
-    Unsafe.getObjectVolatile( maps, NonLockingHashMap.tableOffset +
-             index * NonLockingHashMap.tableScale ).asInstanceOf[HashMap[A,B]]
+    Unsafe.getObjectVolatile( maps, tableOffset + index * tableScale ).asInstanceOf[HashMap[A,B]]
   } 
 
   private def updateHashMap( index: Int, expect: HashMap[A,B], update: HashMap[A,B] ): Boolean = {
-    Unsafe.compareAndSwapObject( maps, NonLockingHashMap.tableOffset +
-            index * NonLockingHashMap.tableScale, expect, update )
+    Unsafe.compareAndSwapObject( maps, tableOffset + index * tableScale, expect, update )
   } 
 
   private def hashFun( _h: Int ) = {

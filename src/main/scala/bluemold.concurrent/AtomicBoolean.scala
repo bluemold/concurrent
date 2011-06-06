@@ -11,18 +11,25 @@ import org.bluemold.unsafe.Unsafe
  */
 
 object AtomicBoolean {
-  val unsafeValueIndex = Unsafe.objectDeclaredFieldOffset( classOf[AtomicBooleanUnsafe], "value")
+  private[concurrent] val unsafeValueIndex = Unsafe.objectDeclaredFieldOffset( classOf[AtomicBoolean], "value")
 
-  def create(): AtomicBoolean = new AtomicBooleanUnsafe()
-  def create( value: Boolean ): AtomicBoolean = create().initialize( value )  
+  def create(): AtomicBoolean = new AtomicBoolean()
+  def create( value: Boolean ): AtomicBoolean = new AtomicBoolean( value )  
 }
 
-abstract class AtomicBoolean {
-  def get(): Boolean
-  def set( value: Boolean )
-  def compareAndSet( expect: Boolean, update: Boolean ): Boolean
+final class AtomicBoolean( _default: Boolean ) {
+  import AtomicBoolean._
 
-  private[concurrent] final def initialize( value: Boolean ): AtomicBoolean = { set( value ); this }
+  def this() = this( false )
+
+  @volatile private var value: Int = if ( _default ) 1 else 0
+
+  def get(): Boolean = ( value != 0 )
+  def set(value: Boolean) { this.value = if ( value ) 1 else 0 }
+  def compareAndSet(expect: Boolean, update: Boolean): Boolean = 
+    compareAndSet0( if ( expect ) 1 else 0, if ( update ) 1 else 0 )
+  def compareAndSet0(expect: Int, update: Int): Boolean = 
+    Unsafe.compareAndSwapInt( this, unsafeValueIndex, expect, update )
 
   /**
    * Atomically sets to the given value and returns the old value.
@@ -30,7 +37,7 @@ abstract class AtomicBoolean {
    * @param newValue the new value
    * @return the previous value
    */
-  final def getAndSet(newValue: Boolean): Boolean =
+  def getAndSet(newValue: Boolean): Boolean =
   {
       val current: Boolean = get()
       if ( compareAndSet(current, newValue) ) current else getAndSet( newValue )
@@ -41,7 +48,7 @@ abstract class AtomicBoolean {
    *
    * @return the previous value
    */
-  final def getAndNegate(): Boolean =
+  def getAndNegate(): Boolean =
   {
       val current: Boolean = get()
       val next: Boolean = ! current
@@ -53,7 +60,7 @@ abstract class AtomicBoolean {
    *
    * @return the updated value
    */
-  final def negateAndGet(): Boolean =
+  def negateAndGet(): Boolean =
   {
       val current: Boolean = get()
       val next: Boolean = ! current
@@ -68,14 +75,4 @@ abstract class AtomicBoolean {
   {
     get().toString
   }
-}
-
-private class AtomicBooleanUnsafe extends AtomicBoolean {
-  @volatile var value: Int = 0
-  override def get(): Boolean = ( value != 0 )
-  override def set(value: Boolean) { this.value = if ( value ) 1 else 0 }
-  override def compareAndSet(expect: Boolean, update: Boolean): Boolean = 
-    compareAndSet0( if ( expect ) 1 else 0, if ( update ) 1 else 0 )
-  def compareAndSet0(expect: Int, update: Int): Boolean = 
-    Unsafe.compareAndSwapInt( this, AtomicBoolean.unsafeValueIndex, expect, update )
 }

@@ -11,14 +11,14 @@ import java.lang.IndexOutOfBoundsException
  * [Description]
  */
 
-object AtomicReferenceArray {
+private[concurrent] object AtomicReferenceArray {
   val arrayOffset = Unsafe.arrayBaseOffset( classOf[Array[AnyRef]] )
   val arrayScale = Unsafe.arrayIndexScale( classOf[Array[AnyRef]] )
 }
-class AtomicReferenceArray[T <: AnyRef]( size: Int ) {
+final class AtomicReferenceArray[T <: AnyRef]( size: Int ) {
   import AtomicReferenceArray._
 
-  val array = new Array[AnyRef]( size )
+  private val array = new Array[AnyRef]( size )
   def get( index: Int ): T = {
     if ( index < 0 || index >= size )
       throw new IndexOutOfBoundsException()

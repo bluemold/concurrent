@@ -13,21 +13,19 @@ import annotation.tailrec
 
 object AtomicLong {
   import Unsafe._
-  val noSpinValueIndex = objectDeclaredFieldOffset( classOf[AtomicLongNoSpin], "value" )
-  val unsafeValueIndex = objectDeclaredFieldOffset( classOf[AtomicLongUnsafe], "value" )
+  private[concurrent] val noSpinValueIndex = objectDeclaredFieldOffset( classOf[AtomicLongNoSpin], "value" )
+  private[concurrent] val unsafeValueIndex = objectDeclaredFieldOffset( classOf[AtomicLong], "value" )
 
-  val useUnsafe = isCs8supported
+  private[concurrent] val useUnsafe = isCs8supported
 
-  def create(): AtomicLong = if ( useUnsafe ) new AtomicLongUnsafe() else new AtomicLongNoSpin()
-  def create( value: Long ): AtomicLong = create().initialize( value )  
+  def create(): AbstractAtomicLong = if ( useUnsafe ) new AtomicLong() else new AtomicLongNoSpin()
+  def create( value: Long ): AbstractAtomicLong = if ( useUnsafe ) new AtomicLong( value ) else new AtomicLongNoSpin( value )  
 }
 
-abstract class AtomicLong {
+abstract class AbstractAtomicLong {
   def get(): Long
   def set( value: Long )
   def compareAndSet( expect: Long, update: Long ): Boolean
-
-  private[concurrent] final def initialize( value: Long ): AtomicLong = { set( value ); this }
 
   /**
    * Atomically sets to the given value and returns the old value.
@@ -134,25 +132,29 @@ abstract class AtomicLong {
 
 private final case class LongValue( value: Long )
 
-private final class AtomicLongUnsafe extends AtomicLong {
-  @volatile var value: Long = 0
+final class AtomicLong( _default: Long ) extends AbstractAtomicLong {
+  import AtomicLong._
+  def this() = this( 0 )
+  @volatile private var value: Long = _default
   override def get(): Long = value
   override def set(value: Long) { this.value = value }
   override def compareAndSet(expect: Long, update: Long): Boolean = 
-    Unsafe.compareAndSwapLong( this, AtomicLong.unsafeValueIndex, expect, update )
+    Unsafe.compareAndSwapLong( this, unsafeValueIndex, expect, update )
 }
 
-private final class AtomicLongNoSpin extends AtomicLong {
-  @volatile var value: LongValue = LongValue( 0 )
+final class AtomicLongNoSpin( _default: Long ) extends AbstractAtomicLong {
+  import AtomicLong._
+  def this() = this( 0 )
+  @volatile private var value: LongValue = LongValue( _default )
   override def get(): Long = value.value
   override def set(value: Long) { this.value = LongValue( value ) }
   override def compareAndSet(expect: Long, update: Long): Boolean = compareAndSet0( expect, LongValue( update ) ) 
 
   @tailrec
-  def compareAndSet0(expect: Long, updateValue: LongValue ): Boolean = {
+  private def compareAndSet0(expect: Long, updateValue: LongValue ): Boolean = {
     val currentValue = this.value
     if ( currentValue.value == expect ) {
-      if ( Unsafe.compareAndSwapObject( this, AtomicLong.noSpinValueIndex, currentValue, updateValue ) )
+      if ( Unsafe.compareAndSwapObject( this, noSpinValueIndex, currentValue, updateValue ) )
         true
       else
         compareAndSet0( expect, updateValue )

@@ -12,18 +12,22 @@ import annotation.tailrec
  */
 
 object AtomicInteger {
-  val unsafeValueIndex = Unsafe.objectDeclaredFieldOffset( classOf[AtomicIntegerUnsafe], "value" )
+  private[concurrent] val unsafeValueIndex = Unsafe.objectDeclaredFieldOffset( classOf[AtomicInteger], "value" )
 
-  def create(): AtomicInteger = new AtomicIntegerUnsafe()
-  def create( value: Int ): AtomicInteger = create().initialize( value )  
+  def create(): AtomicInteger = new AtomicInteger()
+  def create( value: Int ): AtomicInteger = new AtomicInteger( value )  
 }
 
-abstract class AtomicInteger {
-  def get(): Int
-  def set( value: Int )
-  def compareAndSet( expect: Int, update: Int ): Boolean
+final class AtomicInteger( _default: Int ) {
+  import AtomicInteger._
 
-  private[concurrent] final def initialize( value: Int ): AtomicInteger = { set( value ); this }
+  def this() = this( 0 )
+
+  @volatile private var value: Int = _default
+  def get(): Int = value
+  def set(value: Int) { this.value = value }
+  def compareAndSet(expect: Int, update: Int): Boolean = 
+    Unsafe.compareAndSwapInt( this, unsafeValueIndex, expect, update )
 
   /**
    * Atomically sets to the given value and returns the old value.
@@ -32,7 +36,7 @@ abstract class AtomicInteger {
    * @return the previous value
    */
   @tailrec
-  final def getAndSet(newValue: Int): Int =
+  def getAndSet(newValue: Int): Int =
   {
       val current: Int = get()
       if ( compareAndSet(current, newValue) ) current else getAndSet( newValue )
@@ -44,7 +48,7 @@ abstract class AtomicInteger {
    * @return the previous value
    */
   @tailrec
-  final def getAndIncrement(): Int =
+  def getAndIncrement(): Int =
   {
       val current: Int = get()
       val next: Int = current + 1
@@ -52,7 +56,7 @@ abstract class AtomicInteger {
   }
 
   @tailrec
-  final def getAndModIncrement( m: Int ): Int =
+  def getAndModIncrement( m: Int ): Int =
   {
       val current: Int = get()
       val next: Int = ( current + 1 ) % m
@@ -65,7 +69,7 @@ abstract class AtomicInteger {
    * @return the previous value
    */
   @tailrec
-  final def getAndDecrement(): Int =
+  def getAndDecrement(): Int =
   {
       val current: Int = get()
       val next: Int = current - 1
@@ -73,7 +77,7 @@ abstract class AtomicInteger {
   }
 
   @tailrec
-  final def getAndModDecrement( m: Int ): Int =
+  def getAndModDecrement( m: Int ): Int =
   {
       val current: Int = get()
       val next: Int = ( current - 1 ) % m
@@ -86,7 +90,7 @@ abstract class AtomicInteger {
    * @return the previous value
    */
   @tailrec
-  final def getAndAdd(delta: Int): Long =
+  def getAndAdd(delta: Int): Long =
   {
       val current: Int = get()
       val next: Int = current + delta
@@ -94,7 +98,7 @@ abstract class AtomicInteger {
   }
 
   @tailrec
-  final def getAndModAdd(delta: Int, m: Int ): Long =
+  def getAndModAdd(delta: Int, m: Int ): Long =
   {
       val current: Int = get()
       val next: Int = ( current + delta ) % m
@@ -107,7 +111,7 @@ abstract class AtomicInteger {
    * @return the updated value
    */
   @tailrec
-  final def incrementAndGet(): Int =
+  def incrementAndGet(): Int =
   {
       val current: Int = get()
       val next: Int = current + 1
@@ -115,7 +119,7 @@ abstract class AtomicInteger {
   }
 
   @tailrec
-  final def modIncrementAndGet( m: Int ): Int =
+  def modIncrementAndGet( m: Int ): Int =
   {
       val current: Int = get()
       val next: Int = ( current + 1 ) % m
@@ -128,7 +132,7 @@ abstract class AtomicInteger {
    * @return the updated value
    */
   @tailrec
-  final def decrementAndGet(): Int =
+  def decrementAndGet(): Int =
   {
       val current: Int = get()
       val next: Int = current - 1
@@ -136,7 +140,7 @@ abstract class AtomicInteger {
   }
 
   @tailrec
-  final def modDecrementAndGet( m: Int ): Int =
+  def modDecrementAndGet( m: Int ): Int =
   {
       val current: Int = get()
       val next: Int = ( current - 1 ) % m
@@ -150,7 +154,7 @@ abstract class AtomicInteger {
    * @return the updated value
    */
   @tailrec
-  final def addAndGet(delta: Int): Int =
+  def addAndGet(delta: Int): Int =
   {
       val current: Int = get()
       val next: Int = current + delta
@@ -158,7 +162,7 @@ abstract class AtomicInteger {
   }
 
   @tailrec
-  final def modAddAndGet( delta: Int, m: Int ): Int =
+  def modAddAndGet( delta: Int, m: Int ): Int =
   {
       val current: Int = get()
       val next: Int = ( current + delta ) % m
@@ -169,17 +173,9 @@ abstract class AtomicInteger {
    * Returns the String representation of the current value.
    * @return the String representation of the current value.
    */
-  override final def toString: String = get().toString
-  final def booleanValue: Boolean = get().asInstanceOf[Boolean]
-  final def charValue: Char = get().asInstanceOf[Char]
-  final def shortValue: Short = get().asInstanceOf[Short]
-  final def floatValue: Float = get().asInstanceOf[Float]
-}
-
-private final class AtomicIntegerUnsafe extends AtomicInteger {
-  @volatile var value: Int = 0
-  override def get(): Int = value
-  override def set(value: Int) { this.value = value }
-  override def compareAndSet(expect: Int, update: Int): Boolean = 
-    Unsafe.compareAndSwapInt( this, AtomicInteger.unsafeValueIndex, expect, update )
+  override def toString: String = get().toString
+  def booleanValue: Boolean = get().asInstanceOf[Boolean]
+  def charValue: Char = get().asInstanceOf[Char]
+  def shortValue: Short = get().asInstanceOf[Short]
+  def floatValue: Float = get().asInstanceOf[Float]
 }
