@@ -5,7 +5,7 @@ import Assert._;
 
 object AtomicBooleanTest {
     def suite: Test = {
-        val suite = new TestSuite(classOf[AtomicBooleanTest]);
+        val suite = new TestSuite(classOf[NonLockingHashMapTest]);
         suite
     }
 

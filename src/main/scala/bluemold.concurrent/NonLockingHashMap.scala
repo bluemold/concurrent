@@ -46,16 +46,17 @@ final class NonLockingHashMap[A,B]( requestedConcurrency: Int ) extends Map[A, B
   private val maps = Array.fill( concurrency )( new HashMap[A,B] )
 
 
-  override def empty: this.type = {
-    0 until concurrency foreach { index => empty0( index ) }
-    this
+  override def empty: this.type = new NonLockingHashMap( concurrency )
+
+  override def clear() {
+    0 until concurrency foreach { index => clear0( index ) }
   }
 
   @tailrec
-  private def empty0( index: Int ) {
+  private def clear0( index: Int ) {
     val map = getHashMap( index )
     if ( ! updateHashMap( index, map, map.empty ) )
-      empty0( index )
+      clear0( index )
   }
 
   override def +=(kv: (A, B)): this.type = {
