@@ -3,14 +3,6 @@ package bluemold.concurrent.casn
 import org.bluemold.unsafe.Unsafe
 import annotation.tailrec
 
-/**
- * CasnSequence<br/>
- * Author: Neil Essy<br/>
- * Created: 4/22/11<br/>
- * <p/>
- * [Description]
- */
-
 object CasnVar {
   import Unsafe._
 
@@ -736,8 +728,7 @@ class CasnSequence {
         val currentLockValue = op.target.getLockValue
         val currentLock = currentLockValue.lock
         if ( currentLock == null )
-          // throw new RuntimeException( "What Happened!" )
-          processTR( sequences, sequence ) // unexpected state, re-run step
+          processTR( sequences, sequence ) // this can happen, re-run step
         else {
           val currentLockSequence = currentLock.sequence
           if ( sequence == currentLockSequence ) { // if we have an immediate lock on it
@@ -1077,18 +1068,18 @@ class CasnSequence {
   }
 
   private final def areWeBlockingCurrentLockSequence( sequences: List[CasnSequence], currentSequence: CasnSequence ): Boolean = {
-    areWeBlockingCurrentSequenceLock( sequences, currentSequence, currentSequence.firstOp )
-  }
-
-  private final def areWeBlockingCurrentSequenceLock( sequences: List[CasnSequence], currentSequence: CasnSequence, op: Op ): Boolean = {
-    if ( op == null) false
-    else areWeBlockingCurrentSequenceLock( sequences, currentSequence, op, op.target.getLockValue.lock )
+    val firstOp = currentSequence.firstOp
+    if ( firstOp == null ) false
+    else areWeBlockingCurrentSequenceLock( sequences, currentSequence, firstOp, firstOp.target.getLockValue.lock )
   }
 
   @tailrec
   private final def areWeBlockingCurrentSequenceLock( sequences: List[CasnSequence], currentSequence: CasnSequence, op: Op, lock: CasnLock ): Boolean = {
-    if ( lock == null || lock.sequence == currentSequence )
-      areWeBlockingCurrentSequenceLock( sequences, currentSequence, op.nextOp )
+    if ( lock == null || lock.sequence == currentSequence ) {
+      val nextOp = op.nextOp
+      if ( nextOp == null ) false
+      else areWeBlockingCurrentSequenceLock( sequences, currentSequence, nextOp, nextOp.target.getLockValue.lock )
+    }
     else if ( sequences.contains( lock.sequence ) ) true
     else areWeBlockingCurrentSequenceLock( sequences, currentSequence, op, lock.next )
   }
