@@ -3,14 +3,6 @@ package bluemold.concurrent
 import org.bluemold.unsafe.Unsafe
 import annotation.tailrec
 
-/**
- * AtomicInteger<br/>
- * Author: Neil Essy<br/>
- * Created: 4/22/11<br/>
- * <p/>
- * [Description]
- */
-
 object AtomicInteger {
   private[concurrent] val unsafeValueIndex = Unsafe.objectDeclaredFieldOffset( classOf[AtomicInteger], "value" )
 

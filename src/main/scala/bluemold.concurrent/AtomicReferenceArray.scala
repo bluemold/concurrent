@@ -3,14 +3,6 @@ package bluemold.concurrent
 import org.bluemold.unsafe.Unsafe
 import java.lang.IndexOutOfBoundsException
 
-/**
- * AtomicArray<br/>
- * Author: Neil Essy<br/>
- * Created: 5/20/11<br/>
- * <p/>
- * [Description]
- */
-
 private[concurrent] object AtomicReferenceArray {
   val arrayOffset = Unsafe.arrayBaseOffset( classOf[Array[AnyRef]] )
   val arrayScale = Unsafe.arrayIndexScale( classOf[Array[AnyRef]] )

@@ -3,14 +3,6 @@ package bluemold.concurrent
 import org.bluemold.unsafe.Unsafe
 import annotation.tailrec
 
-/**
- * AtomicLong<br/>
- * Author: Neil Essy<br/>
- * Created: 4/22/11<br/>
- * <p/>
- * [Description]
- */
-
 object AtomicLong {
   import Unsafe._
   private[concurrent] val noSpinValueIndex = objectDeclaredFieldOffset( classOf[AtomicLongNoSpin], "value" )

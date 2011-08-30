@@ -14,9 +14,6 @@ object AtomicBooleanTest {
     }
 }
 
-/**
- * Unit test for simple App.
- */
 class AtomicBooleanTest extends TestCase("app") {
 
     /**

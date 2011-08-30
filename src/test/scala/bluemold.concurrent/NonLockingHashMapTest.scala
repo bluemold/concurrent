@@ -1,7 +1,6 @@
 package bluemold.concurrent
 
 import junit.framework._;
-import Assert._;
 
 object NonLockingHashMapTest {
     def suite: Test = {
@@ -14,9 +13,6 @@ object NonLockingHashMapTest {
     }
 }
 
-/**
- * Unit test for simple App.
- */
 class NonLockingHashMapTest extends TestCase("app") {
 
     /**

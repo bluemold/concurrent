@@ -3,15 +3,6 @@ package bluemold.concurrent
 import org.bluemold.unsafe.Unsafe
 import annotation.tailrec
 
-/**
- * CancelableQueue<br/>
- * Author: Neil Essy<br/>
- * Created: 4/18/11<br/>
- * <p/>
- * [Description]
- */
-
-
 private[concurrent] object CancelableQueue {
   import Unsafe._
   

@@ -2,14 +2,6 @@ package bluemold.concurrent
 
 import org.bluemold.unsafe.Unsafe
 
-/**
- * AtomicLong<br/>
- * Author: Neil Essy<br/>
- * Created: 4/22/11<br/>
- * <p/>
- * [Description]
- */
-
 object AtomicBoolean {
   private[concurrent] val unsafeValueIndex = Unsafe.objectDeclaredFieldOffset( classOf[AtomicBoolean], "value")
 

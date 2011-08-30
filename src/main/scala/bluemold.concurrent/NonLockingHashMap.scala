@@ -7,14 +7,6 @@ import collection.mutable.MapLike
 import collection.mutable.Map
 import collection.Iterator
 
-/**
- * NonLockingHashMap<br/>
- * Author: Neil Essy<br/>
- * Created: 5/13/11<br/>
- * <p/>
- * [Description]
- */
-
 private[concurrent] object NonLockingHashMap {
 
   val tableOffset = Unsafe.arrayBaseOffset( classOf[Array[HashMap[Any,Any]]] )
