@@ -68,11 +68,12 @@ private[casn] object CasnOp {
   @tailrec
   def isTargetPreviouslyLocked( prevOp: CasnOp[_], target: CasnVar[_] ): Boolean =
     if ( prevOp == null ) false
-    else if ( prevOp.getTarget == target ) true
+    else if ( prevOp.target == target ) true
     else isTargetPreviouslyLocked( prevOp.prevOp, target )
 }
-abstract class CasnOp[T]( _prevOp: CasnOp[_] ) {
+abstract class CasnOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) {
   import CasnOp._
+  final val target = _target
   @volatile var opStatus: CasnOpStatus = CasnOpUndecided
   @volatile var prevValue: TaggedValue[T] = null
   @volatile var nextOp: CasnOp[_] = null
@@ -83,7 +84,7 @@ abstract class CasnOp[T]( _prevOp: CasnOp[_] ) {
     _prevOp.nextOp = this
 
   def initialize() {
-    targetPreviouslyLocked = isTargetPreviouslyLocked( prevOp, getTarget )
+    targetPreviouslyLocked = isTargetPreviouslyLocked( prevOp, target )
   }
 
 
@@ -92,14 +93,15 @@ abstract class CasnOp[T]( _prevOp: CasnOp[_] ) {
   def getUpdateValue = prevValue
   def unlink() { nextOp = null }
 
-  def getTarget: CasnVar[T]
   private[casn] def execute( sequence: CasnSequence[_] )
   private[casn] def revert( sequence: CasnSequence[_] )
 
   @inline
-  private[casn] final def executeSingleRead(): Boolean = setPrevValue( getTarget.value )
+  private[casn] final def executeSingleRead(): Boolean = setPrevValue( target.value )
 
-  private[casn] def evaluateSingleExpect(): Boolean = true
+  private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ): Boolean = true
+  
+  private[casn] final def singleCheckExpectedValue(): Boolean = checkExpectedValue( prevValue )
 
   @inline
   private[casn] final def updateOpStatus( expect: CasnOpStatus, update: CasnOpStatus ): Boolean =
@@ -148,8 +150,9 @@ abstract class CasnOp[T]( _prevOp: CasnOp[_] ) {
   // the sequence being added to the concurrent environment
   // via the execute method by that same thread
 
+  @inline
   private final def addOp[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ) =
-      new GenericOp( this, target, expect, update )
+    new GenericOp( this, target, expect, update )
 
   def get[U]( target: CasnVar[U] ): CasnOp[U] = new GetOp( this, target )
 
@@ -159,27 +162,23 @@ abstract class CasnOp[T]( _prevOp: CasnOp[_] ) {
   def expect[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U ): CasnOp[U] =
     addOp( target, expect, ( op: CasnOp[U] ) => op.prevValue.value )
 
-  def cas[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ): CasnOp[U] = {
+  def cas[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ): CasnOp[U] =
     addOp( target, expect, update )
-  }
 
-  def setVal[U]( target: CasnVar[U], update: U ): CasnOp[U] = {
+  def setVal[U]( target: CasnVar[U], update: U ): CasnOp[U] =
     addOp( target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
-  }
 
-  def expectVal[U]( target: CasnVar[U], expect: U ): CasnOp[U] = {
+  def expectVal[U]( target: CasnVar[U], expect: U ): CasnOp[U] =
     addOp( target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => op.prevValue.value )
-  }
 
-  def casVal[U]( target: CasnVar[U], expect: U, update: U ): CasnOp[U] = {
+  def casVal[U]( target: CasnVar[U], expect: U, update: U ): CasnOp[U] =
     addOp( target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => update )
-  }
 
   def casTagged[U]( target: CasnVar[U], expect: TaggedValue[U], update: ( CasnOp[U] ) => U ): CasnOp[U] =
-    new GenericOp( new ExpectTaggedOp( this, target, expect ), target, ( op: CasnOp[U] ) => op.prevValue.value, update )
+    new ExpectTaggedGenericOp( this, target, expect, update )
 
   def casTaggedVal[U]( target: CasnVar[U], expect: TaggedValue[U], update: U ): CasnOp[U] =
-    new GenericOp( new ExpectTaggedOp( this, target, expect ), target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
+    new ExpectTaggedUpdateOp( this, target, expect, update )
 
   def expectTagged[U]( target: CasnVar[U], expect: TaggedValue[U] ): CasnOp[U] =
     new ExpectTaggedOp( this, target, expect )
@@ -195,7 +194,7 @@ private[casn] object CasnModifyOp {
   @tailrec
   def setPriorModifyOpForTarget[T]( prevOp: CasnOp[_], target: CasnVar[T], currentOp: CasnModifyOp[T] ) {
     if ( prevOp != null ) {
-      if ( prevOp.getTarget == target )
+      if ( prevOp.target == target )
         prevOp match {
           case priorOp: CasnModifyOp[T] => priorOp.nextModifyOpForTarget = currentOp
           case _ => setPriorModifyOpForTarget( prevOp.prevOp, target, currentOp )
@@ -205,7 +204,7 @@ private[casn] object CasnModifyOp {
   }
 }
 
-abstract class CasnModifyOp[T]( _prevOp: CasnOp[_] ) extends CasnOp[T]( _prevOp ) {
+abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extends CasnOp[T]( _prevOp, _target ) {
   import CasnModifyOp._
   @volatile var updateValue: TaggedValue[T] = null
   @volatile var revertValue: TaggedValue[T] = null
@@ -214,177 +213,50 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_] ) extends CasnOp[T]( _prevOp 
   override final def isReadOnly = false
   override final def getUpdateValue = updateValue
 
-  override def initialize() {
+  override final def initialize() {
     super.initialize()
     if ( targetPreviouslyLocked )
-      setPriorModifyOpForTarget( prevOp, getTarget, this )
+      setPriorModifyOpForTarget( prevOp, target, this )
   }
 
+  private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ): TaggedValue[T]
+  
   override final def unlink() {
     nextOp = null
     nextModifyOpForTarget = null
   }
 
   final def getRevertValue = revertValue
-  private[casn] def setUpdateValue( update: TaggedValue[T] ): Boolean =
+  private[casn] final def setUpdateValue( update: TaggedValue[T] ): Boolean =
     Unsafe.compareAndSwapObject( this, updateValueIndex, null, update )
 
-  private[casn] def setRevertValue( update: TaggedValue[T] ): Boolean =
+  private[casn] final def setRevertValue( update: TaggedValue[T] ): Boolean =
     Unsafe.compareAndSwapObject( this, revertValueIndex, null, update )
-} 
 
-object NoOp extends CasnOp[Nothing]( null ) {
-  def getTarget = null
-
-  private[casn] def execute(sequence: CasnSequence[_]) {}
-  private[casn] def revert(sequence: CasnSequence[_]) {}
-
-  override def get[U]( target: CasnVar[U] ): CasnOp[U] = new GetOp( null, target )
-
-  override def set[U]( target: CasnVar[U], update: ( CasnOp[U] ) => U ): CasnOp[U] =
-    new GenericOp( null, target, ( op: CasnOp[U] ) => op.prevValue.value, update )
-
-  override def expect[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U ): CasnOp[U] =
-    new GenericOp( null, target, expect, ( op: CasnOp[U] ) => op.prevValue.value )
-
-  override def cas[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ): CasnOp[U] = {
-    new GenericOp( null, target, expect, update )
-  }
-
-  override def setVal[U]( target: CasnVar[U], update: U ): CasnOp[U] = {
-    new GenericOp( null, target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
-  }
-
-  override def expectVal[U]( target: CasnVar[U], expect: U ): CasnOp[U] = {
-    new GenericOp( null, target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => op.prevValue.value )
-  }
-
-  override def casVal[U]( target: CasnVar[U], expect: U, update: U ): CasnOp[U] = {
-    new GenericOp( null, target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => update )
-  }
-
-  override def casTagged[U]( target: CasnVar[U], expect: TaggedValue[U], update: ( CasnOp[U] ) => U ): CasnOp[U] =
-              new ExpectTaggedOp( null, target, expect )
-              .cas( target, ( op: CasnOp[U] ) => op.prevValue.value, update )
-
-  override def casTaggedVal[U]( target: CasnVar[U], expect: TaggedValue[U], update: U ): CasnOp[U] =
-      new ExpectTaggedOp( null, target, expect )
-      .cas( target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
-
-  override def expectTagged[U]( target: CasnVar[U], expect: TaggedValue[U] ): CasnOp[U] =
-    new ExpectTaggedOp( null, target, expect )
-
-  override def update[U]( target: CasnVar[U], update: ( U ) => U ): CasnOp[U] =
-    new UpdateOp( null, target, update )
-}
-
-private[casn] object GenericOp {
-  val expectValueIndex = objectDeclaredFieldOffset( classOf[GenericOp[_]], "expectValue" ) 
-}
-private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], expect: ( CasnOp[T] ) => T, update: ( CasnOp[T] ) => T ) extends CasnModifyOp[T]( _prevOp ) {
-  import GenericOp._
-  @volatile var expectValue: TaggedValue[T] = null
-
-  private[casn] def setExpectValue( update: TaggedValue[T] ): Boolean =
-    Unsafe.compareAndSwapObject( this, expectValueIndex, null, update )
-
-  def getTarget = target
-  override def execute( sequence: CasnSequence[_] ) { executeTR( sequence ) }
-  override def revert( sequence: CasnSequence[_] ) { revertTR( sequence ) }
-
-  override private[casn] def evaluateSingleExpect() = prevValue.value == expect( this )
+  override final def execute( sequence: CasnSequence[_] ) { executeTR( sequence ) }
+  override final def revert( sequence: CasnSequence[_] ) { revertTR( sequence ) }
 
   @inline
   @tailrec
-  private def executeTR( sequence: CasnSequence[_] ) {
+  private final def executeTR( sequence: CasnSequence[_] ) {
     opStatus match {
       case CasnOpUndecided => {
         val prevValue = this.prevValue
         if ( prevValue == null ) {
           val prevValue = target.getTagged
           if ( setPrevValue( prevValue ) ) {
-            val expectValue = this.expectValue
-            if ( expectValue == null ) {
-              val expectValue = new TaggedValue( expect( this ) )
-              if ( setExpectValue( expectValue ) ) {
-                val updateValue = this.updateValue
-                if ( updateValue == null ) {
-                  val updateValue = new TaggedValue( update( this ) )
-                  if ( setUpdateValue( updateValue ) ) {
-                    /* Attempt to modify target */
-                    val currentValue = target.getTagged
-                    if ( currentValue == prevValue ) {
-                      if ( currentValue.value == expectValue.value ) {
-                        if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
-                          if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                            executeTR( sequence ) // unexpected
-                        // else continue to the next op
-                        } else executeTR( sequence ) // unexpected
-                      } else { // fail
-                        if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
-                          executeTR( sequence ) // unexpected
-                        // else continue to the next op
-                      }
-                    } else {
-                      if ( currentValue == updateValue ) {
-                        if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                          executeTR( sequence ) // unexpected
-                        // else continue to the next op
-                      } else executeTR( sequence ) // unexpected
-                    }
-                    /* Attempt to modify target */
-                  } else executeTR( sequence ) // unexpected
-                } else executeTR( sequence ) // unexpected
-              } else executeTR( sequence ) // unexpected
-            } else executeTR( sequence ) // unexpected
-          } else executeTR( sequence ) // unexpected
-        } else {
-          val expectValue = this.expectValue
-          if ( expectValue == null ) {
-            val expectValue = new TaggedValue( expect( this ) )
-            if ( setExpectValue( expectValue ) ) {
-              val updateValue = this.updateValue
-              if ( updateValue == null ) {
-                val updateValue = new TaggedValue( update( this ) )
-                if ( setUpdateValue( updateValue ) ) {
-                  /* Attempt to modify target */
-                  val currentValue = target.getTagged
-                  if ( currentValue == prevValue ) {
-                    if ( currentValue.value == expectValue.value ) {
-                      if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
-                        if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                          executeTR( sequence ) // unexpected
-                        // else continue to the next op
-                      } else executeTR( sequence ) // unexpected
-                    } else { // fail
-                      if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
-                        executeTR( sequence ) // unexpected
-                      // else continue to the next op
-                    }
-                  } else {
-                    if ( currentValue == updateValue ) {
-                      if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                        executeTR( sequence ) // unexpected
-                      // else continue to the next op
-                    } else executeTR( sequence ) // unexpected
-                  }
-                  /* Attempt to modify target */
-                } else executeTR( sequence ) // unexpected
-              } else executeTR( sequence ) // unexpected
-            } else executeTR( sequence ) // unexpected
-          } else {
             val updateValue = this.updateValue
             if ( updateValue == null ) {
-              val updateValue = new TaggedValue( update( this ) )
+              val updateValue = generateUpdateValue( prevValue )
               if ( setUpdateValue( updateValue ) ) {
                 /* Attempt to modify target */
                 val currentValue = target.getTagged
                 if ( currentValue == prevValue ) {
-                  if ( currentValue.value == expectValue.value ) {
-                    if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
+                  if ( checkExpectedValue( prevValue ) ) {
+                    if ( target.updateTagged( prevValue,  updateValue ) ) { // update target
                       if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                         executeTR( sequence ) // unexpected
-                      // else continue to the next op
+                    // else continue to the next op
                     } else executeTR( sequence ) // unexpected
                   } else { // fail
                     if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
@@ -400,12 +272,18 @@ private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], 
                 }
                 /* Attempt to modify target */
               } else executeTR( sequence ) // unexpected
-            } else {
+            } else executeTR( sequence ) // unexpected
+          } else executeTR( sequence ) // unexpected
+        } else {
+          val updateValue = this.updateValue
+          if ( updateValue == null ) {
+            val updateValue = generateUpdateValue( prevValue )
+            if ( setUpdateValue( updateValue ) ) {
               /* Attempt to modify target */
               val currentValue = target.getTagged
               if ( currentValue == prevValue ) {
-                if ( currentValue.value == expectValue.value ) {
-                  if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
+                if ( checkExpectedValue( prevValue ) ) {
+                  if ( target.updateTagged( prevValue,  updateValue ) ) { // update target
                     if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                       executeTR( sequence ) // unexpected
                     // else continue to the next op
@@ -423,7 +301,30 @@ private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], 
                 } else executeTR( sequence ) // unexpected
               }
               /* Attempt to modify target */
+            } else executeTR( sequence ) // unexpected
+          } else {
+            /* Attempt to modify target */
+            val currentValue = target.getTagged
+            if ( currentValue == prevValue ) {
+              if ( checkExpectedValue( prevValue ) ) {
+                if ( target.updateTagged( prevValue,  updateValue ) ) { // update target
+                  if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
+                    executeTR( sequence ) // unexpected
+                  // else continue to the next op
+                } else executeTR( sequence ) // unexpected
+              } else { // fail
+                if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
+                  executeTR( sequence ) // unexpected
+                // else continue to the next op
+              }
+            } else {
+              if ( currentValue == updateValue ) {
+                if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
+                  executeTR( sequence ) // unexpected
+                // else continue to the next op
+              } else executeTR( sequence ) // unexpected
             }
+            /* Attempt to modify target */
           }
         }
       }
@@ -434,7 +335,7 @@ private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], 
 
   @inline
   @tailrec
-  private def revertTR( sequence: CasnSequence[_] ) {
+  private final def revertTR( sequence: CasnSequence[_] ) {
     opStatus match {
       case CasnOpSuccess => {
         val revertValue = this.revertValue
@@ -475,10 +376,68 @@ private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], 
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
+} 
+
+object NoOp extends CasnOp[Nothing]( null, null ) {
+  private[casn] def execute(sequence: CasnSequence[_]) {}
+  private[casn] def revert(sequence: CasnSequence[_]) {}
+
+  override def get[U]( target: CasnVar[U] ): CasnOp[U] = new GetOp( null, target )
+
+  override def set[U]( target: CasnVar[U], update: ( CasnOp[U] ) => U ): CasnOp[U] =
+    new GenericOp( null, target, ( op: CasnOp[U] ) => op.prevValue.value, update )
+
+  override def expect[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U ): CasnOp[U] =
+    new GenericOp( null, target, expect, ( op: CasnOp[U] ) => op.prevValue.value )
+
+  override def cas[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ): CasnOp[U] =
+    new GenericOp( null, target, expect, update )
+
+  override def setVal[U]( target: CasnVar[U], update: U ): CasnOp[U] =
+    new GenericOp( null, target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
+
+  override def expectVal[U]( target: CasnVar[U], expect: U ): CasnOp[U] =
+    new GenericOp( null, target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => op.prevValue.value )
+
+  override def casVal[U]( target: CasnVar[U], expect: U, update: U ): CasnOp[U] =
+    new GenericOp( null, target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => update )
+
+  override def casTagged[U]( target: CasnVar[U], expect: TaggedValue[U], update: ( CasnOp[U] ) => U ): CasnOp[U] =
+    new ExpectTaggedGenericOp( null, target, expect, update )
+
+  override def casTaggedVal[U]( target: CasnVar[U], expect: TaggedValue[U], update: U ): CasnOp[U] =
+    new ExpectTaggedUpdateOp( null, target, expect, update )
+
+  override def expectTagged[U]( target: CasnVar[U], expect: TaggedValue[U] ): CasnOp[U] =
+    new ExpectTaggedOp( null, target, expect )
+
+  override def update[U]( target: CasnVar[U], update: ( U ) => U ): CasnOp[U] =
+    new UpdateOp( null, target, update )
 }
 
-private[casn] final class GetOp[T]( _prevOp: CasnOp[_], target: CasnVar[T] ) extends CasnOp[T]( _prevOp ) {
-  def getTarget = target
+private[casn] object GenericOp {
+  val expectValueIndex = objectDeclaredFieldOffset( classOf[GenericOp[_]], "expectValue" ) 
+}
+private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expect: ( CasnOp[T] ) => T, update: ( CasnOp[T] ) => T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  import GenericOp._
+  @volatile var expectValue: TaggedValue[T] = null
+
+  private[casn] def setExpectValue( update: TaggedValue[T] ): Boolean =
+    Unsafe.compareAndSwapObject( this, expectValueIndex, null, update )
+
+  override def generateUpdateValue( prevValue: TaggedValue[T] ): TaggedValue[T] = new TaggedValue[T]( update( this ) )
+
+  override def checkExpectedValue( prevValue: TaggedValue[T] ): Boolean = {
+    val expectValue = this.expectValue
+    if ( expectValue == null ) {
+      val expectValue = new TaggedValue( expect( this ) )
+      setExpectValue( expectValue )
+      prevValue.value == expectValue.value
+    } else prevValue.value == expectValue.value
+  }
+}
+
+private[casn] final class GetOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extends CasnOp[T]( _prevOp, _target ) {
   override def execute( sequence: CasnSequence[_] ) {
     opStatus match {
       case CasnOpUndecided =>
@@ -500,13 +459,11 @@ private[casn] final class GetOp[T]( _prevOp: CasnOp[_], target: CasnVar[T] ) ext
   }
 }
 
-private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], expectTagged: TaggedValue[T] ) extends CasnOp[T]( _prevOp ) {
-  def getTarget = target
+private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expectTagged: TaggedValue[T] ) extends CasnOp[T]( _prevOp, _target ) {
   override def execute( sequence: CasnSequence[_] ) { executeTR( sequence ) }
   override def revert( sequence: CasnSequence[_] ) { revertTR( sequence ) }
 
-  @inline
-  override private[casn] def evaluateSingleExpect() = expectTagged == prevValue
+  override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = expectTagged == prevValue
 
   @inline
   @tailrec
@@ -549,125 +506,18 @@ private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], target: CasnVar
   }
 }
 
-private[casn] final class UpdateOp[T]( _prevOp: CasnOp[_], target: CasnVar[T], update: ( T ) => T ) extends CasnModifyOp[T]( _prevOp ) {
-  def getTarget = target
-  override def execute( sequence: CasnSequence[_] ) { executeTR( sequence ) }
-  override def revert( sequence: CasnSequence[_] ) { revertTR( sequence ) }
+private[casn] final class UpdateOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], update: ( T ) => T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  override private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ) = new TaggedValue( update( prevValue.value ) )
+}
 
-  override private[casn] def evaluateSingleExpect() = true
+private[casn] final class ExpectTaggedUpdateOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expect: TaggedValue[T], update: T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  override private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ) = new TaggedValue( update )
+  override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = prevValue == expect
+}
 
-  @inline
-  @tailrec
-  private def executeTR( sequence: CasnSequence[_] ) {
-      opStatus match {
-        case CasnOpUndecided =>
-          val prevValue = this.prevValue
-          if ( prevValue == null ) {
-            val prevValue = target.getTagged
-            if ( setPrevValue( prevValue ) ) {
-              val updateValue = new TaggedValue( update( prevValue.value ) )
-              if ( setUpdateValue( updateValue ) ) {
-                /* Attempt to modify target */
-                val currentValue = target.getTagged
-                if ( currentValue == prevValue ) {
-                  if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
-                    if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                      executeTR( sequence ) // unexpected
-                  } else executeTR( sequence ) // unexpected
-                } else {
-                  if ( currentValue == updateValue ) {
-                    if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                      executeTR( sequence ) // unexpected
-                  } else executeTR( sequence ) // unexpected
-                }
-                /* Attempt to modify target */
-              } else executeTR( sequence ) // unexpected
-            } else executeTR( sequence ) // unexpected
-          } else {
-            val updateValue = this.updateValue
-            if ( updateValue == null ) {
-              val updateValue = new TaggedValue( update( prevValue.value ) )
-              if ( setUpdateValue( updateValue ) ) {
-                /* Attempt to modify target */
-                val currentValue = target.getTagged
-                if ( currentValue == prevValue ) {
-                  if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
-                    if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                      executeTR( sequence ) // unexpected
-                  } else executeTR( sequence ) // unexpected
-                } else {
-                  if ( currentValue == updateValue ) {
-                    if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                      executeTR( sequence ) // unexpected
-                  } else executeTR( sequence ) // unexpected
-                }
-                /* Attempt to modify target */
-              } else executeTR( sequence ) // unexpected
-            } else {
-              /* Attempt to modify target */
-              val currentValue = target.getTagged
-              if ( currentValue == prevValue ) {
-                if ( target.updateTagged( currentValue,  updateValue ) ) { // update target
-                  if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                    executeTR( sequence ) // unexpected
-                } else executeTR( sequence ) // unexpected
-              } else {
-                if ( currentValue == updateValue ) {
-                  if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-                    executeTR( sequence ) // unexpected
-                } else executeTR( sequence ) // unexpected
-              }
-              /* Attempt to modify target */
-            }
-          }
-        case CasnOpSuccess | CasnOpFailure | CasnOpReverted => // continue
-        case _ => throw new RuntimeException( "What Happened" )
-      }
-  }
-
-  @inline
-  @tailrec
-  private def revertTR( sequence: CasnSequence[_] ) {
-    opStatus match {
-      case CasnOpSuccess => {
-        val revertValue = this.revertValue
-        if ( revertValue == null ) {
-          val revertValue = new TaggedValue( prevValue.value )
-          if ( setRevertValue( revertValue ) ) {
-            revertTR( sequence ) // next step
-          } else revertTR( sequence ) // unexpected
-        } else {
-          val updateValue = this.updateValue
-          if ( updateValue == null ) {
-            throw new RuntimeException( "What Happened" )
-          } else {
-            val currentValue = target.getTagged
-            if ( currentValue == updateValue ) {
-              if ( target.updateTagged( updateValue, revertValue ) ) { // success
-                if ( ! updateOpStatus( CasnOpSuccess, CasnOpReverted ) )
-                  revertTR( sequence ) // unexpected
-              } else revertTR( sequence ) // unexpected
-            } else {
-              val nextModifyOpForTarget = this.nextModifyOpForTarget
-              if ( nextModifyOpForTarget != null ) {
-                val nextModifyRevertValue = nextModifyOpForTarget.getRevertValue
-                if ( nextModifyRevertValue != null ) {
-                  if ( currentValue == nextModifyRevertValue ) {
-                    if ( target.updateTagged( nextModifyRevertValue, revertValue ) ) { // success
-                      if ( ! updateOpStatus( CasnOpSuccess, CasnOpReverted ) )
-                        revertTR( sequence ) // unexpected
-                    } else revertTR( sequence ) // unexpected
-                  } else revertTR( sequence ) // unexpected
-                } else revertTR( sequence ) // unexpected
-              } else revertTR( sequence ) // unexpected
-            }
-          }
-        }
-      }
-      case CasnOpFailure | CasnOpReverted => // continue
-      case _ => throw new RuntimeException( "What Happened" )
-    }
-  }
+private[casn] final class ExpectTaggedGenericOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expect: TaggedValue[T], update: ( CasnOp[T] ) => T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  override private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ) = new TaggedValue( update( this ) )
+  override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = prevValue == expect
 }
 
 object CasnSequence {
@@ -686,29 +536,23 @@ object CasnSequence {
   def expect[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U ) =
     new GenericOp( null, target, expect, ( op: CasnOp[U] ) => op.prevValue.value )
 
-  def cas[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ) = {
+  def cas[U]( target: CasnVar[U], expect: ( CasnOp[U] ) => U, update: ( CasnOp[U] ) => U ) =
     new GenericOp( null, target, expect, update )
-  }
 
-  def setVal[U]( target: CasnVar[U], update: U ) = {
+  def setVal[U]( target: CasnVar[U], update: U ) =
     new GenericOp( null, target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
-  }
 
-  def expectVal[U]( target: CasnVar[U], expect: U ) = {
+  def expectVal[U]( target: CasnVar[U], expect: U ) =
     new GenericOp( null, target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => op.prevValue.value )
-  }
 
-  def casVal[U]( target: CasnVar[U], expect: U, update: U ) = {
+  def casVal[U]( target: CasnVar[U], expect: U, update: U ) =
     new GenericOp( null, target, ( op: CasnOp[U] ) => expect, ( op: CasnOp[U] ) => update )
-  }
 
-  def casTagged[U]( target: CasnVar[U], expect: TaggedValue[U], update: ( CasnOp[U] ) => U ) =
-              new ExpectTaggedOp( null, target, expect )
-              .cas( target, ( op: CasnOp[U] ) => op.prevValue.value, update )
+  def casTagged[U]( target: CasnVar[U], expect: TaggedValue[U], update: ( CasnOp[U] ) => U ): CasnOp[U] =
+    new ExpectTaggedGenericOp( null, target, expect, update )
 
-  def casTaggedVal[U]( target: CasnVar[U], expect: TaggedValue[U], update: U ) =
-      new ExpectTaggedOp( null, target, expect )
-      .cas( target, ( op: CasnOp[U] ) => op.prevValue.value, ( op: CasnOp[U] ) => update )
+  def casTaggedVal[U]( target: CasnVar[U], expect: TaggedValue[U], update: U ): CasnOp[U] =
+    new ExpectTaggedUpdateOp( null, target, expect, update )
 
   def expectTagged[U]( target: CasnVar[U], expect: TaggedValue[U] ) =
     new ExpectTaggedOp( null, target, expect )
@@ -919,7 +763,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
         if ( sequence.isSingleOp ) {
           if ( sequence.readOnly ) { // Single ReadOnly Op
             val op = sequence.getLastOp
-            val target = op.getTarget
+            val target = op.target
             val currentLock = target.lockValue
             val currentLockSequence = currentLock.sequence
             if ( currentLockSequence == null ) {
@@ -933,14 +777,14 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                     if ( target.updateLockValue( newLock, postLock ) ) {
                       sequences match {
                         case head :: tail => processTR( tail, head )
-                        case Nil => op.evaluateSingleExpect()
+                        case Nil => op.singleCheckExpectedValue()
                       }
                     } else processTR( sequences, sequence ) // try again
                   } else processTR( sequences, sequence ) // try again
                 } else processTR( sequences, sequence ) // try again
               } else sequences match { // We already succeeded
                 case head :: tail => processTR( tail, head )
-                case Nil => op.evaluateSingleExpect()
+                case Nil => op.singleCheckExpectedValue()
               }
             } else {
               if ( sequence == currentLockSequence ) { // We have it locked
@@ -951,7 +795,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                     if ( target.updateLockValue( currentLock, postLock ) ) {
                       sequences match {
                         case head :: tail => processTR( tail, head )
-                        case Nil => op.evaluateSingleExpect()
+                        case Nil => op.singleCheckExpectedValue()
                       }
                     } else processTR( sequences, sequence ) // try again
                   } else processTR( sequences, sequence ) // try again
@@ -971,13 +815,13 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                   processTR( newSequences, currentLockSequence ) // help out
                 } else sequences match { // We already succeeded
                   case head :: tail => processTR( tail, head )
-                  case Nil => op.evaluateSingleExpect()
+                  case Nil => op.singleCheckExpectedValue()
                 }
               } 
             }
           } else { // Single Modify Op
             val op = sequence.getLastOp
-            val target = op.getTarget
+            val target = op.target
             val currentLock = target.getLockValue
             val currentLockSequence = currentLock.sequence
             op.opStatus match {
@@ -986,7 +830,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                   // not currently locked or pre locked, attempt lock because we are a single sequence
                   val newLock = new CasnLock( sequence, currentLock, false )
                   if ( target.updateLockValue( currentLock, newLock ) ) {
-                    op.execute( this )
+                    op.execute( sequence )
                     val postLock = currentLock.copy()
                     if ( target.updateLockValue( newLock, postLock ) ) {
                       sequences match { // Completed
@@ -998,7 +842,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                 } else { 
                   val currentLockSequence = currentLock.sequence
                   if ( sequence == currentLockSequence ) { // We have the lock already
-                    op.execute( this )
+                    op.execute( sequence )
                     val postLock = currentLock.next.copy()
                     if ( target.updateLockValue( currentLock, postLock ) ) {
                       sequences match { // Completed
@@ -1043,7 +887,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
             preLockingNextStep( sequence, op )
             processTR( sequences, sequence )
           } else {
-            val target = op.getTarget
+            val target = op.target
             val currentLock = target.getLockValue
             val currentLockSequence = currentLock.sequence
             if ( currentLockSequence == null ) {
@@ -1116,7 +960,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
           lockingNextStep( sequence, op )
           processTR( sequences, sequence )
         } else {
-          val target = op.getTarget
+          val target = op.target
           val currentLock = target.getLockValue
           val currentLockSequence = currentLock.sequence
           if ( currentLockSequence == null )
@@ -1143,7 +987,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
       }
       case CasnSeqLocked => { // Updating
         val op = sequence.updateOp
-        val currentLock = op.getTarget.getLockValue
+        val currentLock = op.target.getLockValue
         val currentLockSequence = currentLock.sequence
         op.opStatus match {
           case CasnOpUndecided => {
@@ -1198,7 +1042,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
       case CasnSeqSuccess | CasnSeqFailure => { // Releasing
         val op = sequence.releaseOp
         if ( ! op.targetPreviouslyLocked ) {
-          val target = op.getTarget
+          val target = op.target
           val currentLock = target.getLockValue
           val currentLockSequence = currentLock.sequence
           if ( currentLockSequence == sequence ) {
@@ -1234,7 +1078,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
     blockingTestCounter.incrementAndGet()
     val firstOp = targetSequence.firstOp
     if ( firstOp == null ) throw new RuntimeException( "What Happened" )
-    else areWeBlockingTargetSequenceLock( Nil, sequence, targetSequence, firstOp, firstOp.getTarget.getLockValue )
+    else areWeBlockingTargetSequenceLock( Nil, sequence, targetSequence, firstOp, firstOp.target.getLockValue )
   }
 
   @inline
@@ -1251,9 +1095,9 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
           case head :: tail =>
             val firstOp = targetSequence.firstOp
             if ( firstOp == null ) throw new RuntimeException( "What Happened" )
-            areWeBlockingTargetSequenceLock( tail, sequence, head, firstOp, firstOp.getTarget.getLockValue )
+            areWeBlockingTargetSequenceLock( tail, sequence, head, firstOp, firstOp.target.getLockValue )
         }
-        else areWeBlockingTargetSequenceLock( sequences, sequence, targetSequence, nextOp, nextOp.getTarget.getLockValue )
+        else areWeBlockingTargetSequenceLock( sequences, sequence, targetSequence, nextOp, nextOp.target.getLockValue )
       }
       else if ( lockSequence == sequence ) true
       else if ( sequences.contains( lockSequence ) )
