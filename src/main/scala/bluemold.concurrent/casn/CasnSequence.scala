@@ -45,7 +45,6 @@ private[casn] final class CasnLock( _sequence: CasnSequence[_], _next: CasnLock,
 }
 
 private[casn] class CasnSeqStatus
-private[casn] case object CasnSeqConstructing extends CasnSeqStatus
 private[casn] case object CasnSeqUndecided extends CasnSeqStatus
 private[casn] case object CasnSeqPreLocked extends CasnSeqStatus
 private[casn] case object CasnSeqLocked extends CasnSeqStatus
@@ -93,8 +92,8 @@ abstract class CasnOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) {
   def getUpdateValue = prevValue
   def unlink() { nextOp = null }
 
-  private[casn] def execute( sequence: CasnSequence[_] )
-  private[casn] def revert( sequence: CasnSequence[_] )
+  private[casn] def execute( sequence: CasnSequence[_] ): CasnOpStatus
+  private[casn] def revert( sequence: CasnSequence[_] ): CasnOpStatus
 
   @inline
   private[casn] final def executeSingleRead(): Boolean = setPrevValue( target.value )
@@ -219,6 +218,7 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
       setPriorModifyOpForTarget( prevOp, target, this )
   }
 
+  @inline
   private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ): TaggedValue[T]
   
   override final def unlink() {
@@ -233,12 +233,12 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
   private[casn] final def setRevertValue( update: TaggedValue[T] ): Boolean =
     Unsafe.compareAndSwapObject( this, revertValueIndex, null, update )
 
-  override final def execute( sequence: CasnSequence[_] ) { executeTR( sequence ) }
-  override final def revert( sequence: CasnSequence[_] ) { revertTR( sequence ) }
+  override final def execute( sequence: CasnSequence[_] ) = executeTR( sequence )
+  override final def revert( sequence: CasnSequence[_] ) = revertTR( sequence )
 
   @inline
   @tailrec
-  private final def executeTR( sequence: CasnSequence[_] ) {
+  private final def executeTR( sequence: CasnSequence[_] ): CasnOpStatus = {
     opStatus match {
       case CasnOpUndecided => {
         val prevValue = this.prevValue
@@ -256,18 +256,18 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
                     if ( target.updateTagged( prevValue,  updateValue ) ) { // update target
                       if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                         executeTR( sequence ) // unexpected
-                    // else continue to the next op
+                      else CasnOpSuccess
                     } else executeTR( sequence ) // unexpected
                   } else { // fail
                     if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
                       executeTR( sequence ) // unexpected
-                    // else continue to the next op
+                    else CasnOpFailure
                   }
                 } else {
                   if ( currentValue == updateValue ) {
                     if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                       executeTR( sequence ) // unexpected
-                    // else continue to the next op
+                    else CasnOpSuccess
                   } else executeTR( sequence ) // unexpected
                 }
                 /* Attempt to modify target */
@@ -286,18 +286,18 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
                   if ( target.updateTagged( prevValue,  updateValue ) ) { // update target
                     if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                       executeTR( sequence ) // unexpected
-                    // else continue to the next op
+                    else CasnOpSuccess
                   } else executeTR( sequence ) // unexpected
                 } else { // fail
                   if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
                     executeTR( sequence ) // unexpected
-                  // else continue to the next op
+                  else CasnOpFailure
                 }
               } else {
                 if ( currentValue == updateValue ) {
                   if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                     executeTR( sequence ) // unexpected
-                  // else continue to the next op
+                  else CasnOpSuccess
                 } else executeTR( sequence ) // unexpected
               }
               /* Attempt to modify target */
@@ -310,32 +310,34 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
                 if ( target.updateTagged( prevValue,  updateValue ) ) { // update target
                   if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                     executeTR( sequence ) // unexpected
-                  // else continue to the next op
+                  else CasnOpSuccess
                 } else executeTR( sequence ) // unexpected
               } else { // fail
                 if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
                   executeTR( sequence ) // unexpected
-                // else continue to the next op
+                else CasnOpFailure
               }
             } else {
               if ( currentValue == updateValue ) {
                 if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
                   executeTR( sequence ) // unexpected
-                // else continue to the next op
+                else CasnOpSuccess
               } else executeTR( sequence ) // unexpected
             }
             /* Attempt to modify target */
           }
         }
       }
-      case CasnOpSuccess | CasnOpFailure | CasnOpReverted => // continue to the next op
+      case CasnOpSuccess => CasnOpSuccess
+      case CasnOpFailure => CasnOpFailure
+      case CasnOpReverted => CasnOpReverted
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
 
   @inline
   @tailrec
-  private final def revertTR( sequence: CasnSequence[_] ) {
+  private final def revertTR( sequence: CasnSequence[_] ): CasnOpStatus = {
     opStatus match {
       case CasnOpSuccess => {
         val revertValue = this.revertValue
@@ -352,8 +354,8 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
             val currentValue = target.getTagged
             if ( currentValue == updateValue ) {
               if ( target.updateTagged( updateValue, revertValue ) ) { // success
-                if ( ! updateOpStatus( CasnOpSuccess, CasnOpReverted ) )
-                  revertTR( sequence ) // unexpected
+                if ( updateOpStatus( CasnOpSuccess, CasnOpReverted ) ) CasnOpReverted
+                else revertTR( sequence ) // unexpected
               } else revertTR( sequence ) // unexpected
             } else {
               val nextModifyOpForTarget = this.nextModifyOpForTarget
@@ -362,8 +364,8 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
                 if ( nextModifyRevertValue != null ) {
                   if ( currentValue == nextModifyRevertValue ) {
                     if ( target.updateTagged( nextModifyRevertValue, revertValue ) ) { // success
-                      if ( ! updateOpStatus( CasnOpSuccess, CasnOpReverted ) )
-                        revertTR( sequence ) // unexpected
+                      if ( updateOpStatus( CasnOpSuccess, CasnOpReverted ) ) CasnOpReverted
+                      else revertTR( sequence ) // unexpected
                     } else revertTR( sequence ) // unexpected
                   } else revertTR( sequence ) // unexpected
                 } else revertTR( sequence ) // unexpected
@@ -372,15 +374,15 @@ abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extend
           }
         }
       }
-      case CasnOpFailure | CasnOpReverted => // continue
+      case CasnOpReverted => CasnOpReverted
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
 } 
 
 object NoOp extends CasnOp[Nothing]( null, null ) {
-  private[casn] def execute(sequence: CasnSequence[_]) {}
-  private[casn] def revert(sequence: CasnSequence[_]) {}
+  private[casn] def execute(sequence: CasnSequence[_]) = CasnOpFailure 
+  private[casn] def revert(sequence: CasnSequence[_]) = CasnOpReverted
 
   override def get[U]( target: CasnVar[U] ): CasnOp[U] = new GetOp( null, target )
 
@@ -438,36 +440,43 @@ private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T],
 }
 
 private[casn] final class GetOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extends CasnOp[T]( _prevOp, _target ) {
-  override def execute( sequence: CasnSequence[_] ) {
+  override def execute( sequence: CasnSequence[_] ) = executeTR( sequence )
+  private def executeTR( sequence: CasnSequence[_] ): CasnOpStatus = {
     opStatus match {
       case CasnOpUndecided =>
         val prevValue = this.prevValue
         if ( prevValue == null )
           setPrevValue( target.getTagged )
-        updateOpStatus( CasnOpUndecided, CasnOpSuccess )
-      case CasnOpSuccess | CasnOpFailure | CasnOpReverted => // continue
+        if ( updateOpStatus( CasnOpUndecided, CasnOpSuccess ) ) CasnOpSuccess
+        else executeTR( sequence )
+      case CasnOpSuccess => CasnOpSuccess
+      case CasnOpFailure => CasnOpFailure
+      case CasnOpReverted => CasnOpReverted
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
 
-  override def revert( sequence: CasnSequence[_] ) {
+  override def revert( sequence: CasnSequence[_] ) = revertTR( sequence )
+  private def revertTR( sequence: CasnSequence[_] ): CasnOpStatus = {
     opStatus match {
-      case CasnOpSuccess => updateOpStatus( CasnOpSuccess, CasnOpReverted )
-      case CasnOpReverted => // continue
+      case CasnOpSuccess => 
+        if ( updateOpStatus( CasnOpSuccess, CasnOpReverted ) ) CasnOpReverted
+        else revertTR( sequence )
+      case CasnOpReverted => CasnOpReverted
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
 }
 
 private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expectTagged: TaggedValue[T] ) extends CasnOp[T]( _prevOp, _target ) {
-  override def execute( sequence: CasnSequence[_] ) { executeTR( sequence ) }
-  override def revert( sequence: CasnSequence[_] ) { revertTR( sequence ) }
+  override def execute( sequence: CasnSequence[_] ) = executeTR( sequence )
+  override def revert( sequence: CasnSequence[_] ) = revertTR( sequence )
 
   override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = expectTagged == prevValue
 
   @inline
   @tailrec
-  private def executeTR( sequence: CasnSequence[_] ) {
+  private def executeTR( sequence: CasnSequence[_] ): CasnOpStatus = {
     opStatus match {
       case CasnOpUndecided => 
         val prevValue = this.prevValue
@@ -476,31 +485,29 @@ private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], _target: CasnVa
           executeTR( sequence ) // next step
         } else {
           if ( prevValue == expectTagged ) {
-            if ( ! updateOpStatus( CasnOpUndecided, CasnOpSuccess ) )
-              executeTR( sequence ) // unexpected
+            if ( updateOpStatus( CasnOpUndecided, CasnOpSuccess ) ) CasnOpSuccess
+            else executeTR( sequence ) // unexpected
           } else { // fail
-            if ( ! updateOpStatus( CasnOpUndecided, CasnOpFailure ) )
-              executeTR( sequence ) // unexpected
+            if ( updateOpStatus( CasnOpUndecided, CasnOpFailure ) ) CasnOpFailure
+            else executeTR( sequence ) // unexpected
           } 
         }
-      case CasnOpSuccess | CasnOpFailure | CasnOpReverted => // continue
+      case CasnOpSuccess => CasnOpSuccess
+      case CasnOpFailure => CasnOpFailure
+      case CasnOpReverted => CasnOpReverted
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
 
   @inline
   @tailrec
-  private def revertTR( sequence: CasnSequence[_] ) {
-    sequence.status match {
-      case CasnSeqLocked => opStatus match {
-        case CasnOpSuccess => {
-          if ( ! updateOpStatus( CasnOpSuccess, CasnOpReverted ) )
-            revertTR( sequence ) // unexpected
-        }
-        case CasnOpFailure | CasnOpReverted => // continue
-        case _ => throw new RuntimeException( "What Happened" )
+  private def revertTR( sequence: CasnSequence[_] ): CasnOpStatus = {
+    opStatus match {
+      case CasnOpSuccess => {
+        if ( updateOpStatus( CasnOpSuccess, CasnOpReverted ) ) CasnOpReverted
+        else revertTR( sequence ) // unexpected
       }
-      case CasnSeqAborted | CasnSeqSuccess | CasnSeqFailure | CasnSeqSuccessReleased | CasnSeqFailureReleased => // continue
+      case CasnOpReverted => CasnOpReverted
       case _ => throw new RuntimeException( "What Happened" )
     }
   }
@@ -585,25 +592,21 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   import CasnSequence._
   val identity = identityCounter.incrementAndGet()
   val firstOp: CasnOp[_] = getFirstOp( lastOp )
-  val readOnly: Boolean = isReadOnly( lastOp )
   val isSingleOp = firstOp == lastOp
+  val readOnly: Boolean = isReadOnly( lastOp )
   if ( ! isSingleOp )
     initializeOps( firstOp )
 
   @volatile var status: CasnSeqStatus = CasnSeqUndecided
-  @volatile var preLockOp: CasnOp[_] = null
-  @volatile var lockOp: CasnOp[_] = null
-  @volatile var updateOp: CasnOp[_] = null
-  @volatile var revertOp: CasnOp[_] = null
-  @volatile var releaseOp: CasnOp[_] = null
+  @volatile var preLockOp: CasnOp[_] = _
+  @volatile var lockOp: CasnOp[_] = _
+  @volatile var updateOp: CasnOp[_] = _
+  @volatile var revertOp: CasnOp[_] = _
+  @volatile var releaseOp: CasnOp[_] = _
 
   @inline
   def getLastOp = lastOp
   
-  
-  @inline
-  def isConstructing = status == CasnSeqConstructing
-
   @inline
   def isUndecided = status == CasnSeqUndecided || status == CasnSeqPreLocked || status == CasnSeqLocked
 
@@ -824,30 +827,31 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
             val target = op.target
             val currentLock = target.getLockValue
             val currentLockSequence = currentLock.sequence
-            op.opStatus match {
+            val opStatus = op.opStatus
+            opStatus match {
               case CasnOpUndecided =>
                 if ( currentLockSequence == null ) {
                   // not currently locked or pre locked, attempt lock because we are a single sequence
                   val newLock = new CasnLock( sequence, currentLock, false )
                   if ( target.updateLockValue( currentLock, newLock ) ) {
-                    op.execute( sequence )
+                    val opStatus = op.execute( sequence )
                     val postLock = currentLock.copy()
                     if ( target.updateLockValue( newLock, postLock ) ) {
                       sequences match { // Completed
                         case head :: tail => processTR( tail, head )
-                        case Nil => op.opStatus == CasnOpSuccess
+                        case Nil => opStatus == CasnOpSuccess
                       }                      
                     } else processTR( sequences, sequence ) // try again                    
                   } else processTR( sequences, sequence ) // try again
                 } else { 
                   val currentLockSequence = currentLock.sequence
                   if ( sequence == currentLockSequence ) { // We have the lock already
-                    op.execute( sequence )
+                    val opStatus = op.execute( sequence )
                     val postLock = currentLock.next.copy()
                     if ( target.updateLockValue( currentLock, postLock ) ) {
                       sequences match { // Completed
                         case head :: tail => processTR( tail, head )
-                        case Nil => op.opStatus == CasnOpSuccess
+                        case Nil => opStatus == CasnOpSuccess
                       }                      
                     } else processTR( sequences, sequence ) // try again                    
                   } else {
@@ -859,7 +863,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                 if ( currentLock == null ) {
                   sequences match { // Completed
                     case head :: tail => processTR( tail, head )
-                    case Nil => op.opStatus == CasnOpSuccess
+                    case Nil => opStatus == CasnOpSuccess
                   }
                 } else {
                   val currentLockSequence = currentLock.sequence
@@ -868,13 +872,13 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
                     if ( target.updateLockValue( currentLock, postLock ) ) {
                       sequences match { // Completed
                         case head :: tail => processTR( tail, head )
-                        case Nil => op.opStatus == CasnOpSuccess
+                        case Nil => opStatus == CasnOpSuccess
                       }                      
                     } else processTR( sequences, sequence ) // try again                    
                   } else {
                     sequences match { // Completed
                       case head :: tail => processTR( tail, head )
-                      case Nil => op.opStatus == CasnOpSuccess
+                      case Nil => opStatus == CasnOpSuccess
                     }
                   }                  
                 }
