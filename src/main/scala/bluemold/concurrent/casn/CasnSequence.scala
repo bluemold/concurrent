@@ -359,6 +359,7 @@ private[casn] final class CasnProxyOp( _op: CasnOp[_], _nextOp: CasnProxyOp ) {
 } 
 
 object CasnSequence {
+  private[casn] val uniqueIdentityIndex = objectDeclaredFieldOffset( classOf[CasnSequence[Any]], "uniqueIdentity" ) 
   private[casn] val sequenceStatusIndex = objectDeclaredFieldOffset( classOf[CasnSequence[Any]], "status" ) 
   private[casn] val sequencePreLockOpIndex = objectDeclaredFieldOffset( classOf[CasnSequence[Any]], "preLockOp" ) 
   private[casn] val sequenceLockOpIndex = objectDeclaredFieldOffset( classOf[CasnSequence[Any]], "lockOp" ) 
@@ -421,14 +422,14 @@ object CasnSequence {
     else getProxyOp( lastOp.prevOp, new CasnProxyOp( lastOp, nextProxyOp ) )
   }
 
-  private[casn] val identityCounter = new AtomicLong
   private[casn] val blockingTestCounter = new AtomicLong
-  def getIdentityCount = identityCounter.get()
   def getBlockingTestCount = blockingTestCounter.get()
 }
 final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   import CasnSequence._
-  val identity = identityCounter.incrementAndGet()
+
+  @volatile var uniqueIdentity: List[Int] = Nil
+
   val isSingleOp = lastOp.prevOp == null
   val readOnly: Boolean = isReadOnly( lastOp )
 
@@ -444,6 +445,10 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   @inline
   def getLastOp = lastOp
   
+  @inline
+  private def updateUniqueIdentity( expect: List[Int], update: List[Int] ): Boolean =
+    Unsafe.compareAndSwapObject( this, uniqueIdentityIndex, expect, update )
+
   @inline
   private def setNextPreLockOp( expect: CasnProxyOp, update: CasnProxyOp ): Boolean =
     Unsafe.compareAndSwapObject( this, sequencePreLockOpIndex, expect, update )
@@ -469,7 +474,63 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
     Unsafe.compareAndSwapObject( this, sequenceStatusIndex, expect, update )
 
   @inline
-  private def hasPriorityOver( other: CasnSequence[_] ): Boolean = identity < other.identity
+  private def hasPriorityOver( other: CasnSequence[_] ): Boolean = {
+    if ( hashCode == other.hashCode ) hasPriorityOverByUniqueIdentity( other )
+    else hashCode < other.hashCode
+  }
+
+  @inline
+  private def hasPriorityOverByUniqueIdentity( other: CasnSequence[_] ): Boolean = {
+    var identity = uniqueIdentity
+    var otherIdentity = other.uniqueIdentity
+    if ( identity == Nil ) {
+      updateUniqueIdentity( identity, lastOp.hashCode() :: Nil )
+      if ( otherIdentity == Nil )
+        other.updateUniqueIdentity( otherIdentity, other.getLastOp.hashCode() :: Nil )
+      hasPriorityOverByUniqueIdentity( other )
+    } else if ( otherIdentity == Nil ) {
+      other.updateUniqueIdentity( otherIdentity, other.getLastOp.hashCode() :: Nil )
+      hasPriorityOverByUniqueIdentity( other )
+    } else {
+      var identA = identity.reverse
+      var identB = otherIdentity.reverse
+      var startOver = false
+      var notDone = true
+      var result = false
+      while ( notDone && ! startOver ) {
+        identA match {
+          case headA :: tailA => identB match {
+            case headB :: tailB =>
+              if ( headA == headB ) {
+                identA = tailA
+                identB = tailB
+              }
+              else {
+                result = headA < headB
+                notDone = false
+              }
+            case Nil =>
+              val nextHashCode = System.identityHashCode( otherIdentity )
+              val nextOtherIdentity = nextHashCode :: otherIdentity
+              if ( other.updateUniqueIdentity( otherIdentity, nextOtherIdentity ) ) {
+                otherIdentity = nextOtherIdentity
+                identB = nextHashCode :: Nil
+              } else startOver = true // bumped into another thread updating identity
+          }
+          case Nil =>
+            val nextHashCode = System.identityHashCode( identity )
+            val nextIdentity = nextHashCode :: identity
+            if ( updateUniqueIdentity( identity, nextIdentity ) ) {
+              identity = nextIdentity
+              identA = nextHashCode :: Nil
+            } else startOver = true // bumped into another thread updating identity
+        }
+      }
+      if ( startOver )
+        hasPriorityOverByUniqueIdentity( other )
+      else result
+    }
+  }
 
   def execute(): Boolean = process( this )
 
