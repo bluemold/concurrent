@@ -1,6 +1,8 @@
-package bluemold.concurrent
+package test.bluemold.concurrent
 
-import junit.framework._;
+import junit.framework._
+import bluemold.concurrent.NonLockingHashMap
+;
 
 object NonLockingHashMapTest {
     def suite: Test = {

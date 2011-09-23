@@ -1,7 +1,9 @@
-package bluemold.concurrent;
+package test.bluemold.concurrent
 
 import junit.framework._;
-import Assert._;
+import Assert._
+import bluemold.concurrent.AtomicBoolean
+;
 
 object AtomicBooleanTest {
     def suite: Test = {
