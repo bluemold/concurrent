@@ -62,43 +62,31 @@ private[casn] case object CasnOpReverted extends CasnOpStatus
 
 private[casn] object CasnOp {
   val prevValueIndex = objectDeclaredFieldOffset( classOf[CasnOp[_]], "prevValue" )
-
-  @tailrec
-  def isTargetPreviouslyLocked( prevOp: CasnOp[_], target: CasnVar[_] ): Boolean =
-    if ( prevOp == null ) false
-    else if ( prevOp.target == target ) true
-    else isTargetPreviouslyLocked( prevOp.prevOp, target )
 }
 sealed abstract class CasnOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) {
   import CasnOp._
   final val target = _target
-  @volatile var prevValue: TaggedValue[T] = null
-  @volatile var nextOp: CasnOp[_] = null
-
-  @volatile var targetPreviouslyLocked = false
   final val prevOp = _prevOp
-  if ( _prevOp != null )
-    _prevOp.nextOp = this
+  @volatile var prevValue: TaggedValue[T] = null
 
-  def initialize() {
-    targetPreviouslyLocked = isTargetPreviouslyLocked( prevOp, target )
-  }
+  @inline final def getPrevValue: TaggedValue[T] = prevValue
+  @inline def isReadOnly = true
+  @inline def getUpdateValue = prevValue
+  @inline def getRevertValue = prevValue
 
-
-  final def getPrevValue: TaggedValue[T] = prevValue
-  def isReadOnly = true
-  def getUpdateValue = prevValue
-  def getRevertValue = prevValue
-  def unlink() { nextOp = null }
-
+  @inline
   private[casn] def execute( sequence: CasnSequence[_] ): CasnOpStatus
+
+  @inline
   private[casn] def revert( sequence: CasnSequence[_] ): CasnOpStatus
 
   @inline
   private[casn] final def executeSingleRead(): Boolean = setPrevValue( target.value )
 
+  @inline
   private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ): Boolean = true
   
+  @inline
   private[casn] final def singleCheckExpectedValue(): Boolean = checkExpectedValue( prevValue )
 
   @inline
@@ -175,51 +163,34 @@ sealed abstract class CasnOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) {
 private[casn] object CasnModifyOp {
   val updateValueIndex = objectDeclaredFieldOffset( classOf[CasnModifyOp[_]], "updateValue" ) 
   val revertValueIndex = objectDeclaredFieldOffset( classOf[CasnModifyOp[_]], "revertValue" ) 
-
-  @tailrec
-  def setPriorModifyOpForTarget[T]( prevOp: CasnOp[_], target: CasnVar[T], currentOp: CasnModifyOp[T] ) {
-    if ( prevOp != null ) {
-      if ( prevOp.target == target )
-        prevOp match {
-          case priorOp: CasnModifyOp[T] => priorOp.nextModifyOpForTarget = currentOp
-          case _ => setPriorModifyOpForTarget( prevOp.prevOp, target, currentOp )
-        }
-      else setPriorModifyOpForTarget( prevOp.prevOp, target, currentOp )
-    }
-  }
 }
 
 sealed abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extends CasnOp[T]( _prevOp, _target ) {
   import CasnModifyOp._
   @volatile var updateValue: TaggedValue[T] = null
   @volatile var revertValue: TaggedValue[T] = null
-  @volatile var nextModifyOpForTarget: CasnModifyOp[T] = null
 
+  @inline
   override final def isReadOnly = false
+  @inline
   override final def getUpdateValue = updateValue
+  @inline
   override final def getRevertValue = revertValue
-
-  override final def initialize() {
-    super.initialize()
-    if ( targetPreviouslyLocked )
-      setPriorModifyOpForTarget( prevOp, target, this )
-  }
 
   @inline
   private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ): TaggedValue[T]
   
-  override final def unlink() {
-    nextOp = null
-    nextModifyOpForTarget = null
-  }
-
+  @inline
   private[casn] final def setUpdateValue( update: TaggedValue[T] ): Boolean =
     Unsafe.compareAndSwapObject( this, updateValueIndex, null, update )
 
+  @inline
   private[casn] final def setRevertValue( update: TaggedValue[T] ): Boolean =
     Unsafe.compareAndSwapObject( this, revertValueIndex, null, update )
 
+  @inline
   override final def execute( sequence: CasnSequence[_] ) = executeTR( sequence )
+  @inline
   override final def revert( sequence: CasnSequence[_] ) = revertTR( sequence )
 
   @inline
@@ -260,35 +231,22 @@ sealed abstract class CasnModifyOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] )
   @inline
   @tailrec
   private final def revertTR( sequence: CasnSequence[_] ): CasnOpStatus = {
-          val updateValue = this.updateValue
-          if ( updateValue == null ) {
-            throw new RuntimeException( "What Happened" )
-          } else {
-            val revertValue = this.revertValue
-            if ( revertValue == null ) {
-              val currentValue = target.getTagged
-              if ( currentValue == updateValue ) {
-                val revertValue = new TaggedValue( prevValue.value )
-                if ( target.updateTagged( updateValue, revertValue ) ) {
-                  if ( setRevertValue( revertValue ) ) CasnOpReverted
-                  else revertTR( sequence ) // unexpected
-                } else revertTR( sequence ) // unexpected
-              } else {
-                val nextModifyOpForTarget = this.nextModifyOpForTarget
-                if ( nextModifyOpForTarget != null ) {
-                  val nextModifyRevertValue = nextModifyOpForTarget.getRevertValue
-                  if ( nextModifyRevertValue != null ) {
-                    if ( currentValue == nextModifyRevertValue ) {
-                      if ( target.updateTagged( nextModifyRevertValue, revertValue ) ) { // success
-                        if ( setRevertValue( revertValue ) ) CasnOpReverted
-                        else revertTR( sequence ) // unexpected
-                      } else revertTR( sequence ) // unexpected
-                    } else revertTR( sequence ) // unexpected
-                  } else throw new RuntimeException( "What Happened" )
-                } else throw new RuntimeException( "What Happened" )
-              }
-            } else CasnOpReverted
-          }
+    val updateValue = this.updateValue
+    if ( updateValue == null ) {
+      throw new RuntimeException( "What Happened" )
+    } else {
+      val revertValue = this.revertValue
+      if ( revertValue == null ) {
+        val currentValue = target.getTagged
+        if ( sequence.revertOp != null ) {
+          val revertValue = new TaggedValue( prevValue.value )
+          if ( target.updateTagged( currentValue, revertValue ) ) {
+            if ( setRevertValue( revertValue ) ) CasnOpReverted
+            else revertTR( sequence ) // unexpected
+          } else revertTR( sequence ) // unexpected
+        } else CasnOpReverted
+      } else CasnOpReverted
+    }
   }
 } 
 
@@ -329,29 +287,16 @@ object NoOp extends CasnOp[Nothing]( null, null ) {
     new UpdateOp( null, target, update )
 }
 
-private[casn] object GenericOp {
-  val expectValueIndex = objectDeclaredFieldOffset( classOf[GenericOp[_]], "expectValue" ) 
-}
 private[casn] final class GenericOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expect: ( CasnOp[T] ) => T, update: ( CasnOp[T] ) => T ) extends CasnModifyOp[T]( _prevOp, _target ) {
-  import GenericOp._
-  @volatile var expectValue: TaggedValue[T] = null
-
-  private[casn] def setExpectValue( update: TaggedValue[T] ): Boolean =
-    Unsafe.compareAndSwapObject( this, expectValueIndex, null, update )
-
+  @inline
   override def generateUpdateValue( prevValue: TaggedValue[T] ): TaggedValue[T] = new TaggedValue[T]( update( this ) )
 
-  override def checkExpectedValue( prevValue: TaggedValue[T] ): Boolean = {
-    val expectValue = this.expectValue
-    if ( expectValue == null ) {
-      val expectValue = new TaggedValue( expect( this ) )
-      setExpectValue( expectValue )
-      prevValue.value == expectValue.value
-    } else prevValue.value == expectValue.value
-  }
+  @inline
+  override def checkExpectedValue( prevValue: TaggedValue[T] ): Boolean = prevValue.value == expect( this )
 }
 
 private[casn] final class GetOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) extends CasnOp[T]( _prevOp, _target ) {
+  @inline
   override def execute( sequence: CasnSequence[_] ) = executeTR( sequence )
   private def executeTR( sequence: CasnSequence[_] ): CasnOpStatus = {
     val prevValue = this.prevValue
@@ -361,13 +306,17 @@ private[casn] final class GetOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T] ) ex
     } else CasnOpSuccess
   }
 
+  @inline
   override def revert( sequence: CasnSequence[_] ) = CasnOpReverted
 }
 
 private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expectTagged: TaggedValue[T] ) extends CasnOp[T]( _prevOp, _target ) {
+  @inline
   override def execute( sequence: CasnSequence[_] ) = executeTR( sequence )
+  @inline
   override def revert( sequence: CasnSequence[_] ) = CasnOpReverted
 
+  @inline
   override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = expectTagged == prevValue
 
   @inline
@@ -386,18 +335,28 @@ private[casn] final class ExpectTaggedOp[T]( _prevOp: CasnOp[_], _target: CasnVa
 }
 
 private[casn] final class UpdateOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], update: ( T ) => T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  @inline
   override private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ) = new TaggedValue( update( prevValue.value ) )
 }
 
 private[casn] final class ExpectTaggedUpdateOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expect: TaggedValue[T], update: T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  @inline
   override private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ) = new TaggedValue( update )
+  @inline
   override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = prevValue == expect
 }
 
 private[casn] final class ExpectTaggedGenericOp[T]( _prevOp: CasnOp[_], _target: CasnVar[T], expect: TaggedValue[T], update: ( CasnOp[T] ) => T ) extends CasnModifyOp[T]( _prevOp, _target ) {
+  @inline
   override private[casn] def generateUpdateValue( prevValue: TaggedValue[T] ) = new TaggedValue( update( this ) )
+  @inline
   override private[casn] def checkExpectedValue( prevValue: TaggedValue[T] ) = prevValue == expect
 }
+
+private[casn] final class CasnProxyOp( _op: CasnOp[_], _nextOp: CasnProxyOp ) {
+  def op = _op
+  def nextOp = _nextOp
+} 
 
 object CasnSequence {
   private[casn] val sequenceStatusIndex = objectDeclaredFieldOffset( classOf[CasnSequence[Any]], "status" ) 
@@ -455,6 +414,13 @@ object CasnSequence {
     else false
   }
 
+  @inline
+  @tailrec
+  private[casn] def getProxyOp( lastOp: CasnOp[_], nextProxyOp: CasnProxyOp ): CasnProxyOp = {
+    if ( lastOp == null ) nextProxyOp
+    else getProxyOp( lastOp.prevOp, new CasnProxyOp( lastOp, nextProxyOp ) )
+  }
+
   private[casn] val identityCounter = new AtomicLong
   private[casn] val blockingTestCounter = new AtomicLong
   def getIdentityCount = identityCounter.get()
@@ -463,47 +429,31 @@ object CasnSequence {
 final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   import CasnSequence._
   val identity = identityCounter.incrementAndGet()
-  val firstOp: CasnOp[_] = getFirstOp( lastOp )
-  val isSingleOp = firstOp == lastOp
+  val isSingleOp = lastOp.prevOp == null
   val readOnly: Boolean = isReadOnly( lastOp )
-  if ( ! isSingleOp )
-    initializeOps( firstOp )
+
+  val firstProxyOp: CasnProxyOp = if ( isSingleOp ) null else getProxyOp( lastOp, null )
 
   @volatile var status: CasnSeqStatus = CasnSeqUndecided
-  @volatile var preLockOp: CasnOp[_] = _
-  @volatile var lockOp: CasnOp[_] = _
-  @volatile var updateOp: CasnOp[_] = _
-  @volatile var revertOp: CasnOp[_] = _
-  @volatile var releaseOp: CasnOp[_] = _
+  @volatile var preLockOp: CasnProxyOp = firstProxyOp
+  @volatile var lockOp: CasnProxyOp = firstProxyOp
+  @volatile var updateOp: CasnProxyOp = firstProxyOp
+  @volatile var revertOp: CasnOp[_] = lastOp
+  @volatile var releaseOp: CasnOp[_] = lastOp
 
   @inline
   def getLastOp = lastOp
   
   @inline
-  def isUndecided = status == CasnSeqUndecided || status == CasnSeqPreLocked || status == CasnSeqLocked
-
-  @inline
-  def isPreLocked = status == CasnSeqPreLocked
-
-  @inline
-  def isLocked = status == CasnSeqLocked
-
-  @inline
-  def isSuccess = status == CasnSeqSuccess || status == CasnSeqSuccessReleased
-
-  @inline
-  def isFailure = status == CasnSeqFailure || status == CasnSeqFailureReleased
-
-  @inline
-  private def setNextPreLockOp( expect: CasnOp[_], update: CasnOp[_] ): Boolean =
+  private def setNextPreLockOp( expect: CasnProxyOp, update: CasnProxyOp ): Boolean =
     Unsafe.compareAndSwapObject( this, sequencePreLockOpIndex, expect, update )
 
   @inline
-  private def setNextLockOp( expect: CasnOp[_], update: CasnOp[_] ): Boolean =
+  private def setNextLockOp( expect: CasnProxyOp, update: CasnProxyOp ): Boolean =
     Unsafe.compareAndSwapObject( this, sequenceLockOpIndex, expect, update )
 
   @inline
-  private def setNextUpdateOp( expect: CasnOp[_], update: CasnOp[_] ): Boolean =
+  private def setNextUpdateOp( expect: CasnProxyOp, update: CasnProxyOp ): Boolean =
     Unsafe.compareAndSwapObject( this, sequenceUpdateOpIndex, expect, update )
 
   @inline
@@ -520,15 +470,6 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
 
   @inline
   private def hasPriorityOver( other: CasnSequence[_] ): Boolean = identity < other.identity
-
-  @inline
-  @tailrec
-  private def initializeOps( op: CasnOp[_] ) {
-    if ( op != null ) {
-      op.initialize()
-      initializeOps( op.nextOp )
-    }
-  }
 
   def execute(): Boolean = process( this )
 
@@ -556,41 +497,31 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   }
 
   @inline
-  private def process( sequence: CasnSequence[_] ): Boolean = {
-    if ( sequence.isSingleOp ) processTR( Nil, sequence )
-    else {
-      val firstOp = sequence.firstOp
-      sequence.preLockOp = firstOp
-      sequence.lockOp = firstOp
-      sequence.updateOp = firstOp
-      sequence.releaseOp = lastOp
-      processTR( Nil, sequence )
-    }
-  }
+  private def process( sequence: CasnSequence[_] ): Boolean = processTR( Nil, sequence )
 
   @inline
-  private def updatePreLock( sequence: CasnSequence[_], op: CasnOp[_], target: CasnVar[_], currentLock: CasnLock ) {
+  private def updatePreLock( sequence: CasnSequence[_], op: CasnProxyOp, target: CasnVar[_], currentLock: CasnLock ) {
     if ( sequence.status == CasnSeqUndecided )
       if ( target.updateLockValue( currentLock, new CasnLock( sequence, currentLock, true ) ) )
         preLockingNextStep( sequence, op )
   }
 
   @inline
-  private def preLockingNextStep( sequence: CasnSequence[_], op: CasnOp[_] ) {
+  private def preLockingNextStep( sequence: CasnSequence[_], op: CasnProxyOp ) {
     val nextOp = op.nextOp
     if ( nextOp != null ) setNextPreLockOp( op, nextOp )
     else sequence.updateStatus( CasnSeqUndecided, CasnSeqPreLocked )
   }
 
   @inline
-  private def updateLock( sequence: CasnSequence[_], op: CasnOp[_], target: CasnVar[_], currentLock: CasnLock ) {
+  private def updateLock( sequence: CasnSequence[_], op: CasnProxyOp, target: CasnVar[_], currentLock: CasnLock ) {
     if ( sequence.status == CasnSeqPreLocked )
       if ( target.updateLockValue( currentLock, new CasnLock( sequence, currentLock.next, false ) ) )
         lockingNextStep( sequence, op )
   }
 
   @inline
-  private def lockingNextStep( sequence: CasnSequence[_], op: CasnOp[_] ) {
+  private def lockingNextStep( sequence: CasnSequence[_], op: CasnProxyOp ) {
     val nextOp = op.nextOp
     if ( nextOp != null ) setNextLockOp( op, nextOp )
     else sequence.updateStatus( CasnSeqPreLocked, CasnSeqLocked )
@@ -598,7 +529,7 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   }
 
   @inline
-  private def updatingNextStep( sequence: CasnSequence[_], op: CasnOp[_] ) {
+  private def updatingNextStep( sequence: CasnSequence[_], op: CasnProxyOp ) {
     val nextOp = op.nextOp
     if ( nextOp != null ) setNextUpdateOp( op, nextOp )
     else sequence.updateStatus( CasnSeqLocked, CasnSeqSuccess )
@@ -617,17 +548,6 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
     if ( prevOp != null ) setNextReleaseOp( op, prevOp )
     else if ( sequenceStatus == CasnSeqSuccess ) sequence.updateStatus( CasnSeqSuccess, CasnSeqSuccessReleased )
     else sequence.updateStatus( CasnSeqFailure, CasnSeqFailureReleased )
-  }
-
-  @inline
-  @tailrec
-  private def unlink( sequence: CasnSequence[_], op: CasnOp[_] ): Boolean = {
-    if ( op == null )
-      sequence.status == CasnSeqSuccessReleased
-    else {
-      op.unlink()
-      unlink( sequence, op.prevOp )
-    }
   }
 
   @tailrec
@@ -757,72 +677,67 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
             }
           }
         } else { // Not a Single Op
-          val op = sequence.preLockOp
-          if ( op.targetPreviouslyLocked ) {
-            preLockingNextStep( sequence, op )
+          val proxyOp = sequence.preLockOp
+          val target = proxyOp.op.target
+          val currentLock = target.getLockValue
+          val currentLockSequence = currentLock.sequence
+          if ( currentLockSequence == null ) {
+            // not currently locked or pre locked, attempt pre lock
+            updatePreLock( sequence, proxyOp, target, currentLock )
             processTR( sequences, sequence )
-          } else {
-            val target = op.target
-            val currentLock = target.getLockValue
-            val currentLockSequence = currentLock.sequence
-            if ( currentLockSequence == null ) {
-              // not currently locked or pre locked, attempt pre lock
-              updatePreLock( sequence, op, target, currentLock )
+          } else { 
+            if ( sequence == currentLockSequence || onLockChain( currentLock.next, sequence ) ) {
+              // already ( prelocked or locked ) move on to the next step
+              preLockingNextStep( sequence, proxyOp )
               processTR( sequences, sequence )
-            } else { 
-              if ( sequence == currentLockSequence || onLockChain( currentLock.next, sequence ) ) {
-                // already ( prelocked or locked ) move on to the next step
-                preLockingNextStep( sequence, op )
+            } else if ( currentLock.isPreLock ) {
+              // currently pre locked
+              if ( sequence.hasPriorityOver( currentLockSequence ) ) {
+                // we have priority, grab the pre lock
+                updatePreLock( sequence, proxyOp, target, currentLock )
                 processTR( sequences, sequence )
-              } else if ( currentLock.isPreLock ) {
-                // currently pre locked
-                if ( sequence.hasPriorityOver( currentLockSequence ) ) {
-                  // we have priority, grab the pre lock
-                  updatePreLock( sequence, op, target, currentLock )
-                  processTR( sequences, sequence )
-                } else {
-                  // someone with higher priority got here first so help them
-//                  if ( sequences.contains( currentLockSequence ) )
-//                    throw new RuntimeException( "This should not happen" )
-//                  else {
-                    val newSequences = sequence :: sequences
-                    processTR( newSequences, currentLockSequence ) // help out
-//                  } 
-                }
               } else {
-                // currently locked
-                if ( op == sequence.firstOp ) {
+                // someone with higher priority got here first so help them
 //                  if ( sequences.contains( currentLockSequence ) )
 //                    throw new RuntimeException( "This should not happen" )
 //                  else {
-                    val newSequences = sequence :: sequences
-                    processTR( newSequences, currentLockSequence ) // help out
+                  val newSequences = sequence :: sequences
+                  processTR( newSequences, currentLockSequence ) // help out
 //                  } 
-                }
-                else { // we might be blocking
-                  if ( sequence.hasPriorityOver( currentLockSequence ) ) {
-                    if ( areWeBlockingTargetSequence( sequence, currentLockSequence ) ) {
-                      // grab the pre lock
-                      updatePreLock( sequence, op, target, currentLock )
-                      processTR( sequences, sequence )
-                    } else {
-                      // we are not blocking the lock, try to help out
+              }
+            } else {
+              // currently locked
+              if ( proxyOp == sequence.firstProxyOp ) {
+//                  if ( sequences.contains( currentLockSequence ) )
+//                    throw new RuntimeException( "This should not happen" )
+//                  else {
+                  val newSequences = sequence :: sequences
+                  processTR( newSequences, currentLockSequence ) // help out
+//                  } 
+              }
+              else { // we might be blocking
+                if ( sequence.hasPriorityOver( currentLockSequence ) ) {
+                  if ( areWeBlockingTargetSequence( sequence, currentLockSequence ) ) {
+                    // grab the pre lock
+                    updatePreLock( sequence, proxyOp, target, currentLock )
+                    processTR( sequences, sequence )
+                  } else {
+                    // we are not blocking the lock, try to help out
 //                      if ( sequences.contains( currentLockSequence ) )
 //                        throw new RuntimeException( "This should not happen" )
 //                      else {
-                        val newSequences = sequence :: sequences
-                        processTR( newSequences, currentLockSequence ) // help out
+                      val newSequences = sequence :: sequences
+                      processTR( newSequences, currentLockSequence ) // help out
 //                      }
-                    }
-                  } else {
-                    // we don't have priority, try to help out
+                  }
+                } else {
+                  // we don't have priority, try to help out
 //                    if ( sequences.contains( currentLockSequence ) )
 //                      throw new RuntimeException( "This should not happen" )
 //                    else {
-                      val newSequences = sequence :: sequences
-                      processTR( newSequences, currentLockSequence ) // help out
+                    val newSequences = sequence :: sequences
+                    processTR( newSequences, currentLockSequence ) // help out
 //                    } 
-                  }
                 }
               }
             }
@@ -830,43 +745,39 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
         }
       }
       case CasnSeqPreLocked => { // Locking
-        val op = sequence.lockOp
-        if ( op.targetPreviouslyLocked ) {
-          lockingNextStep( sequence, op )
-          processTR( sequences, sequence )
-        } else {
-          val target = op.target
-          val currentLock = target.getLockValue
-          val currentLockSequence = currentLock.sequence
-          if ( currentLockSequence == null )
-            processTR( sequences, sequence ) // this can happen, re-run step
-          else {
-            if ( sequence == currentLockSequence ) { // if we have an immediate lock on it
-              if ( currentLock.isPreLock ) { // and we have a pre lock then attempt to replace pre lock with lock
-                updateLock( sequence, op, target, currentLock )
-              } else lockingNextStep( sequence, op ) // otherwise already locked, move on to the next one
-              processTR( sequences, sequence ) // continue
-            } else {
-              if ( onLockChain( currentLock.next, sequence ) ) {
-                // we should have a pre lock on the chain, and someone with higher priority must have bumped us so help them
-                if ( sequences.contains( currentLockSequence ) )
-                  throw new RuntimeException( "This should not happen" )
-                else {
-                  val newSequences = sequence :: sequences
-                  processTR( newSequences, currentLockSequence ) // help out
-                } 
-              } else processTR( sequences, sequence ) // not on chain, this is unexpected
-            }
+        val proxyOp = sequence.lockOp
+        val target = proxyOp.op.target
+        val currentLock = target.getLockValue
+        val currentLockSequence = currentLock.sequence
+        if ( currentLockSequence == null )
+          processTR( sequences, sequence ) // this can happen, re-run step
+        else {
+          if ( sequence == currentLockSequence ) { // if we have an immediate lock on it
+            if ( currentLock.isPreLock ) { // and we have a pre lock then attempt to replace pre lock with lock
+              updateLock( sequence, proxyOp, target, currentLock )
+            } else lockingNextStep( sequence, proxyOp ) // otherwise already locked, move on to the next one
+            processTR( sequences, sequence ) // continue
+          } else {
+            if ( onLockChain( currentLock.next, sequence ) ) {
+              // we should have a pre lock on the chain, and someone with higher priority must have bumped us so help them
+              if ( sequences.contains( currentLockSequence ) )
+                throw new RuntimeException( "This should not happen" )
+              else {
+                val newSequences = sequence :: sequences
+                processTR( newSequences, currentLockSequence ) // help out
+              } 
+            } else processTR( sequences, sequence ) // not on chain, this is unexpected
           }
         }
       }
       case CasnSeqLocked => { // Updating
-        val op = sequence.updateOp
+        val proxyOp = sequence.updateOp
+        val op = proxyOp.op
 //        val currentLock = op.target.getLockValue
 //        val currentLockSequence = currentLock.sequence
         op.execute( sequence ) match {
           case CasnOpSuccess =>
-            updatingNextStep( sequence, op )
+            updatingNextStep( sequence, proxyOp )
             processTR( sequences, sequence )
           case CasnOpFailure =>
             val prevOp = op.prevOp
@@ -890,25 +801,20 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
       }
       case CasnSeqSuccess | CasnSeqFailure => { // Releasing
         val op = sequence.releaseOp
-        if ( ! op.targetPreviouslyLocked ) {
-          val target = op.target
-          val currentLock = target.getLockValue
-          val currentLockSequence = currentLock.sequence
-          if ( currentLockSequence == sequence ) {
-            if ( target.updateLockValue( currentLock, currentLock.next.copy() ) )
-              releasingNextStep( sequence, sequenceStatus, op )
-          } else if ( onLockChain( currentLock, sequence ) )
-            throw new RuntimeException( "This shouldn't happen" )
-          else releasingNextStep( sequence, sequenceStatus, op )
-        } else
-          releasingNextStep( sequence, sequenceStatus, op )
+        val target = op.target
+        val currentLock = target.getLockValue
+        val currentLockSequence = currentLock.sequence
+        if ( currentLockSequence == sequence ) {
+          if ( target.updateLockValue( currentLock, currentLock.next.copy() ) )
+            releasingNextStep( sequence, sequenceStatus, op )
+        } else if ( onLockChain( currentLock, sequence ) )
+          throw new RuntimeException( "This shouldn't happen" )
+        else releasingNextStep( sequence, sequenceStatus, op )
         processTR( sequences, sequence )
       }
       case CasnSeqSuccessReleased | CasnSeqFailureReleased => sequences match {
         case head :: tail => processTR( tail, head )
-        case Nil =>
-          if ( sequence.isSingleOp ) sequence.status == CasnSeqSuccessReleased
-          else unlink( sequence, sequence.getLastOp )
+        case Nil => sequence.status == CasnSeqSuccessReleased
       }
       case _ => throw new RuntimeException( "What Happened!" ) 
     }
@@ -925,9 +831,8 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
   @inline
   private def areWeBlockingTargetSequence( sequence: CasnSequence[_], targetSequence: CasnSequence[_] ): Boolean = {
     blockingTestCounter.incrementAndGet()
-    val firstOp = targetSequence.firstOp
-    if ( firstOp == null ) throw new RuntimeException( "What Happened" )
-    else areWeBlockingTargetSequenceLock( Nil, sequence, targetSequence, firstOp, firstOp.target.getLockValue )
+    val lastOp = targetSequence.getLastOp
+    areWeBlockingTargetSequenceLock( Nil, sequence, targetSequence, lastOp, lastOp.target.getLockValue )
   }
 
   @inline
@@ -938,15 +843,14 @@ final class CasnSequence[T]( lastOp: CasnOp[T] ) {
       val lockSequence = lock.sequence
       if ( lockSequence == null ) false // something has changed, break out with false 
       else if ( lockSequence == targetSequence ) {
-        val nextOp = op.nextOp
-        if ( nextOp == null ) sequences match {
+        val prevOp = op.prevOp
+        if ( prevOp == null ) sequences match {
           case Nil => false
           case head :: tail =>
-            val firstOp = targetSequence.firstOp
-            if ( firstOp == null ) throw new RuntimeException( "What Happened" )
-            areWeBlockingTargetSequenceLock( tail, sequence, head, firstOp, firstOp.target.getLockValue )
+            val lastOp = targetSequence.getLastOp
+            areWeBlockingTargetSequenceLock( tail, sequence, head, lastOp, lastOp.target.getLockValue )
         }
-        else areWeBlockingTargetSequenceLock( sequences, sequence, targetSequence, nextOp, nextOp.target.getLockValue )
+        else areWeBlockingTargetSequenceLock( sequences, sequence, targetSequence, prevOp, prevOp.target.getLockValue )
       }
       else if ( lockSequence == sequence ) true
       else if ( sequences.contains( lockSequence ) )
