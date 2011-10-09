@@ -3,20 +3,21 @@ package bluemold.concurrent
 import org.bluemold.unsafe.Unsafe
 import annotation.tailrec
 
-private[concurrent] object CancelableQueue {
+object CancelableQueue {
   import Unsafe._
   
-  val deletedOffset = objectDeclaredFieldOffset( classOf[Entry[Any]], "deleted" )
-  val nextOffset = objectDeclaredFieldOffset( classOf[Entry[Any]], "next" )
-  val prevOffset = objectDeclaredFieldOffset( classOf[Entry[Any]], "prev" )
+  private val deletedOffset = objectDeclaredFieldOffset( classOf[Entry[_]], "deleted" )
+  private val nextOffset = objectDeclaredFieldOffset( classOf[Entry[_]], "next" )
+  private val prevOffset = objectDeclaredFieldOffset( classOf[Entry[_]], "prev" )
 
-  abstract class Entry[T] {
+  sealed abstract class Entry[T] {
     @volatile private[concurrent] var deleted: Int = 0
     @volatile private[concurrent] var prev: Entry[T] = null
     @volatile private[concurrent] var next: Entry[T] = null
     final def isInList = prev != null && next != null && deleted == 0
     def isHead = false
     def isTail = false
+    def delete(): Boolean = throw new RuntimeException( "Can not delete head or tail" )
     private[concurrent] final def updateDeleted( expect: Int, update: Int ) =
       Unsafe.compareAndSwapInt( this, CancelableQueue.deletedOffset, expect, update )
     private[concurrent] final def updatePrev( expect: Entry[T], update: Entry[T] ) =
@@ -24,21 +25,24 @@ private[concurrent] object CancelableQueue {
     private[concurrent] final def updateNext( expect: Entry[T], update: Entry[T] ) =
       Unsafe.compareAndSwapObject( this, CancelableQueue.nextOffset, expect, update )
   }
-  private[concurrent] class Head[T] extends Entry[T] {
-    override def isHead = true
-  }
-  private[concurrent] class Tail[T] extends Entry[T] {
-    override def isTail = true
-  }
-  private[concurrent] class Node[T]( _value: T ) extends Entry[T] {
-    val value = _value
-  }
 }
 
 final class CancelableQueue[T] {
   import CancelableQueue._
-  val head = new Head[T]
-  val tail = new Tail[T]
+
+  final private[concurrent] class Head extends Entry[T] {
+    override def isHead = true
+  }
+  final private[concurrent] class Tail extends Entry[T] {
+    override def isTail = true
+  }
+  final private[concurrent] class Node( _value: T ) extends Entry[T] {
+    val value = _value
+    override def delete() = CancelableQueue.this.delete( this )
+  }
+
+  val head = new Head
+  val tail = new Tail
   head.updateNext( null, tail )
   tail.updatePrev( null, head )
 
@@ -50,21 +54,37 @@ final class CancelableQueue[T] {
   }
 
   def peek(): Option[T] = {
+    val next = head.next
+    if ( next.isInstanceOf[Tail] ) None
+    else if ( next.isInstanceOf[Node] ) Some( next.asInstanceOf[Node].value )
+    else throw new RuntimeException( "What Happened!" )
+/*
     head.next match {
-      case candidate: Tail[T] => None
-      case candidate: Node[T] => Some( candidate.value )
+      case candidate: Tail => None
+      case candidate: Node => Some( candidate.value )
+      case _ => throw new RuntimeException( "What Happened!" )
     }
+*/
   }
 
   @tailrec
   def pop(): Option[T] = {
+    val next = head.next
+    if ( next.isInstanceOf[Tail] ) None
+    else if ( next.isInstanceOf[Node] ) {
+      if ( delete( next ) ) Some( next.asInstanceOf[Node].value )
+      else pop()
+    } else throw new RuntimeException( "What Happened!" )
+/*
     head.next match {
-      case candidate: Tail[T] => None
-      case candidate: Node[T] => {
+      case candidate: Tail => None
+      case candidate: Node => {
         if ( delete( candidate ) ) Some( candidate.value )
         else pop()
       } 
+      case _ => throw new RuntimeException( "What Happened!" )
     }
+*/
   }
 
   def insertBefore( entry: Entry[T], value: T ): Entry[T] = {
