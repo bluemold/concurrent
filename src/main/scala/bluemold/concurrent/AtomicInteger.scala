@@ -82,7 +82,7 @@ final class AtomicInteger( _default: Int ) {
    * @return the previous value
    */
   @tailrec
-  def getAndAdd(delta: Int): Long =
+  def getAndAdd(delta: Int): Int =
   {
       val current: Int = get()
       val next: Int = current + delta
@@ -90,7 +90,7 @@ final class AtomicInteger( _default: Int ) {
   }
 
   @tailrec
-  def getAndModAdd(delta: Int, m: Int ): Long =
+  def getAndModAdd(delta: Int, m: Int ): Int =
   {
       val current: Int = get()
       val next: Int = ( current + delta ) % m
@@ -118,6 +118,14 @@ final class AtomicInteger( _default: Int ) {
       if ( compareAndSet(current, next) ) next else modIncrementAndGet( m )
   }
 
+  @tailrec
+  def incrementIfNonNegative(): Boolean =
+  {
+      val current: Int = get()
+      val next: Int = ( current + 1 )
+      if ( current >= 0 && compareAndSet(current, next) ) true else incrementIfNonNegative()
+  }
+
   /**
    * Atomically decrements by one the current value.
    *
@@ -137,6 +145,14 @@ final class AtomicInteger( _default: Int ) {
       val current: Int = get()
       val next: Int = ( current - 1 ) % m
       if ( compareAndSet(current, next) ) next else modDecrementAndGet( m )
+  }
+
+  @tailrec
+  def decrementIfPositive(): Boolean =
+  {
+      val current: Int = get()
+      val next: Int = ( current - 1 )
+      if ( current > 0 && compareAndSet(current, next) ) true else decrementIfPositive()
   }
 
   /**
