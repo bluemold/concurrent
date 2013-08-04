@@ -16,13 +16,13 @@ final class Future[T] {
   @tailrec def onComplete( handler: (T)=>Unit ) {
     val old = state
     if ( old.value ne None ) handler( old.value.get )
-    if ( ! old.failed && ! Unsafe.compareAndSwapObject( this, stateOffset, old, State( None, false, handler :: old.onComplete, old.onFailure ) ) )
+    else if ( ! old.failed && ! Unsafe.compareAndSwapObject( this, stateOffset, old, State( None, false, handler :: old.onComplete, old.onFailure ) ) )
       onComplete( handler )
   }
   @tailrec def onFailure( handler: ()=>Unit ) {
     val old = state
     if ( old.failed ) handler()
-    if ( (old.value eq None) && ! Unsafe.compareAndSwapObject( this, stateOffset, old, State( None, false, old.onComplete, handler :: old.onFailure ) ) )
+    else if ( (old.value eq None) && ! Unsafe.compareAndSwapObject( this, stateOffset, old, State( None, false, old.onComplete, handler :: old.onFailure ) ) )
       onFailure( handler )
   }
   @tailrec def complete( value: T ) {
