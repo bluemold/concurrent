@@ -19,11 +19,11 @@ object CancelableQueue {
     def isTail = false
     def delete(): Boolean = throw new RuntimeException( "Can not delete head or tail" )
     private[concurrent] final def updateDeleted( expect: Int, update: Int ) =
-      Unsafe.compareAndSwapInt( this, CancelableQueue.deletedOffset, expect, update )
+      us.compareAndSwapInt( this, CancelableQueue.deletedOffset, expect, update )
     private[concurrent] final def updatePrev( expect: Entry[T], update: Entry[T] ) =
-      Unsafe.compareAndSwapObject( this, CancelableQueue.prevOffset, expect, update )
+      us.compareAndSwapObject( this, CancelableQueue.prevOffset, expect, update )
     private[concurrent] final def updateNext( expect: Entry[T], update: Entry[T] ) =
-      Unsafe.compareAndSwapObject( this, CancelableQueue.nextOffset, expect, update )
+      us.compareAndSwapObject( this, CancelableQueue.nextOffset, expect, update )
   }
 }
 
